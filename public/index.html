@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Team Word Guess (5‑Player)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #161a21;
+      --accent: #6ee7b7;
+      --muted: #a0a8b8;
+      --text: #e7e9ee;
+      --correct: #22c55e;    /* green */
+      --present: #eab308;    /* yellow */
+      --absent: #ffffff;     /* white for ABSENT per your spec */
+      --locked-border: #22c55e;
+      --tile-bg: #0e1320;
+      --tile-border: #273043;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: radial-gradient(1200px 600px at 70% -10%, #1b2230, var(--bg));
+      color: var(--text); display: grid; place-items: center; padding: 20px;
+    }
+    .wrap { width: 100%; max-width: 860px; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px; gap: 10px;
+    }
+    h1 { font-size: 22px; margin: 0; letter-spacing: 0.5px; }
+    .panel {
+      background: linear-gradient(180deg, #171b23, #12161d);
+      border: 1px solid #222938; border-radius: 14px; padding: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+    .topbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    button {
+      background: var(--accent); color: #0a0f0d; font-weight: 700; border: 0;
+      padding: 10px 14px; border-radius: 12px; cursor: pointer;
+    }
+    .linkbar { display: flex; gap: 8px; align-items: center; flex: 1; }
+    .linkbar input {
+      flex: 1; min-width: 260px; padding: 10px 12px; border-radius: 10px; border: 1px solid #273043;
+      background: #0e1320; color: #cfe3ff; font-size: 14px;
+    }
+    .meta { color: var(--muted); font-size: 14px; }
+
+    /* grid */
+    #grid { display: grid; gap: 10px; justify-content: center; }
+    .row { display: grid; grid-template-columns: repeat(5, 64px); gap: 10px; }
+    .tile {
+      width: 64px; height: 64px; border-radius: 10px;
+      border: 2px solid var(--tile-border); background: var(--tile-bg);
+      display: grid; place-items: center; font-weight: 800; font-size: 28px;
+      text-transform: uppercase; letter-spacing: 1px;
+      user-select: none; outline: none;
+      color: var(--text);
+    }
+    .tile.focus { box-shadow: 0 0 0 3px rgba(110,231,183,.35); }
+    .tile.locked { border-color: var(--locked-border); }
+    .tile.correct { background: var(--correct); border-color: #16a34a; color: #081207; }
+    .tile.present { background: var(--present); border-color: #9e7d05; color: #0a0900; }
+    .tile.absent { background: var(--absent); border-color: #cbd5e1; color: #0b0f17; }
+
+    .roster { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 8px; }
+    .slotBadge {
+      padding: 6px 8px; border-radius: 10px; background: #0e1420; border: 1px solid #222938;
+      text-align: center; font-size: 12px; color: var(--muted);
+    }
+    .slotBadge.occupied { color: #b7c0d9; border-color: #3a445a; }
+
+    .toast { margin-top: 10px; color: #ffd19a; min-height: 20px; }
+    .gameOver { text-align: center; padding: 12px; border-radius: 12px; background: #161d29; border: 1px solid #273043; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Team Word Guess (5‑Player)</h1>
+      <div class="meta" id="status">connecting…</div>
+    </header>
+
+    <div class="panel">
+      <div class="topbar">
+        <div class="linkbar">
+          <input id="share" readonly />
+          <button id="copy">Copy Link</button>
+        </div>
+        <button id="newRoom">Refresh Room Code</button>
+      </div>
+
+      <div id="grid"></div>
+      <div class="roster" id="roster"></div>
+      <div class="toast" id="toast"></div>
+      <div class="gameOver" id="gameOver" hidden></div>
+    </div>
+  </div>
+
+  <script>
+    const qs = (s) => document.querySelector(s);
+    const gridEl = qs("#grid");
+    const rosterEl = qs("#roster");
+    const shareEl = qs("#share");
+    const copyBtn = qs("#copy");
+    const newRoomBtn = qs("#newRoom");
+    const statusEl = qs("#status");
+    const toastEl = qs("#toast");
+    const gameOverEl = qs("#gameOver");
+
+    const params = new URLSearchParams(location.search);
+
+    async function ensureLobby() {
+      if (!params.get("lobby")) {
+        const res = await fetch("/create");
+        const data = await res.json();
+        const url = new URL(location.href);
+        url.searchParams.set("lobby", data.lobbyId);
+        history.replaceState({}, "", url.toString());
+      }
+    }
+
+    // UI state
+    let ws, mySlot = null;
+    let round = 0, maxRounds = 4;
+    const rows = []; // { el, tiles[5] }
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+    function setShareLink() {
+      shareEl.value = location.href;
+      copyBtn.onclick = async () => {
+        await navigator.clipboard.writeText(shareEl.value);
+        showToast("Link copied.");
+      };
+      newRoomBtn.onclick = async () => {
+        const res = await fetch("/create");
+        const data = await res.json();
+        location.href = data.joinUrl; // navigate to a fresh lobby
+      };
+    }
+    function showToast(msg) { toastEl.textContent = msg || ""; setTimeout(()=>{ if (toastEl.textContent===msg) toastEl.textContent=""; }, 3000); }
+
+    function buildGrid() {
+      gridEl.innerHTML = "";
+      gridEl.style.gridTemplateRows = `repeat(${maxRounds}, 64px)`;
+      rows.length = 0;
+      for (let r = 0; r < maxRounds; r++) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const tiles = [];
+        for (let c = 0; c < 5; c++) {
+          const t = document.createElement("div");
+          t.className = "tile";
+          t.tabIndex = -1;
+          t.textContent = "";
+          row.appendChild(t);
+          tiles.push(t);
+        }
+        gridEl.appendChild(row);
+        rows.push({ el: row, tiles });
+      }
+    }
+    function currentRowTiles() { return rows[round]?.tiles || []; }
+
+    // typing directly into the grid (your own slot only)
+    function focusMyTile() {
+      if (mySlot == null) return;
+      const tile = currentRowTiles()[mySlot];
+      if (tile) { tile.classList.add("focus"); tile.focus(); }
+    }
+    function blurMyTile() {
+      const tile = currentRowTiles()[mySlot];
+      if (tile) tile.classList.remove("focus");
+    }
+    document.addEventListener("keydown", (e) => {
+      if (mySlot == null) return;
+      // block typing if already locked
+      const rowTiles = currentRowTiles();
+      if (!rowTiles.length) return;
+      const myTile = rowTiles[mySlot];
+      const isLocked = myTile.classList.contains("locked");
+
+      if (/^[a-zA-Z]$/.test(e.key)) {
+        e.preventDefault();
+        if (isLocked) return;
+        myTile.textContent = e.key.toUpperCase();
+      } else if (e.key === "Backspace") {
+        e.preventDefault();
+        if (isLocked) return;
+        myTile.textContent = "";
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (isLocked) return;
+        const letter = (myTile.textContent || "").trim().toUpperCase();
+        if (!/^[A-Z]$/.test(letter)) { showToast("Type one letter A–Z in your tile."); return; }
+        // lock visually before sending
+        myTile.classList.add("locked");
+        ws?.send(JSON.stringify({ type: "submitLetter", letter }));
+      }
+    });
+
+    // websocket
+    function connectWS() {
+      const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?lobby=${params.get("lobby")}`;
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => setStatus("connected");
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        switch (msg.type) {
+          case "error": showToast(msg.message); break;
+          case "join":
+            mySlot = msg.slot;
+            round = msg.round;
+            maxRounds = msg.maxRounds;
+            buildGrid();
+            renderHistory(msg.history);
+            renderSlots(msg.slots);
+            setShareLink();
+            focusMyTile();
+            break;
+          case "roster": renderRoster(msg.players); break;
+          case "slotUpdate": applySlot(msg.slot, msg.slotState); break;
+          case "invalidGuess":
+            showToast(`“${msg.guess}” is not in the word list.`);
+            // keep letters, just unlock all tiles to allow edits
+            unlockRowVisual();
+            focusMyTile();
+            break;
+          case "reveal": renderReveal(msg.guess, msg.colors); break;
+          case "newRow":
+            round = msg.round;
+            // new clean row for next attempt
+            focusMyTile();
+            break;
+          case "rowUnlocked":
+            renderSlots(msg.slots); // keeps letters, removes locks
+            focusMyTile();
+            break;
+          case "gameOver": endGame(msg); break;
+          case "reset": resetClient(msg); break;
+        }
+      };
+      ws.onclose = () => setStatus("disconnected");
+      ws.onerror = () => setStatus("connection error");
+    }
+
+    // rendering
+    function renderRoster(players) {
+      rosterEl.innerHTML = "";
+      for (const p of players) {
+        const d = document.createElement("div");
+        d.className = "slotBadge" + (p.occupied ? " occupied" : "");
+        d.textContent = p.occupied ? `Slot ${p.slot+1} — ${p.name || "Player"}` : `Slot ${p.slot+1} — (open)`;
+        rosterEl.appendChild(d);
+      }
+    }
+    function renderHistory(history) {
+      // show all completed rows (stays on screen)
+      for (let r = 0; r < history.length; r++) {
+        const h = history[r];
+        const tiles = rows[r].tiles;
+        for (let c = 0; c < 5; c++) {
+          const t = tiles[c];
+          t.textContent = h.guess[c];
+          t.classList.remove("locked");
+          t.classList.add(classFor(h.colors[c]));
+        }
+      }
+    }
+    function renderSlots(slots) {
+      // show current row letters/locks without clearing previous rows
+      const tiles = currentRowTiles();
+      for (let i = 0; i < 5; i++) {
+        const s = slots[i];
+        const t = tiles[i];
+        if (!t) continue;
+        t.textContent = s.letter || "";
+        t.classList.toggle("locked", !!s.locked);
+      }
+    }
+    function applySlot(slot, state) {
+      const t = currentRowTiles()[slot];
+      if (!t) return;
+      t.textContent = state.letter || "";
+      t.classList.toggle("locked", !!state.locked);
+    }
+    function renderReveal(guess, colors) {
+      const tiles = currentRowTiles();
+      for (let i = 0; i < 5; i++) {
+        const t = tiles[i];
+        t.classList.remove("locked");
+        t.textContent = guess[i];
+        t.classList.add(classFor(colors[i]));
+      }
+    }
+    function classFor(color) {
+      if (color === "correct") return "correct";
+      if (color === "present") return "present";
+      return "absent"; // white
+    }
+    function unlockRowVisual() {
+      const tiles = currentRowTiles();
+      for (const t of tiles) t.classList.remove("locked");
+    }
+    function endGame({ reason, answer }) {
+      blurMyTile();
+      gameOverEl.hidden = false;
+      gameOverEl.textContent =
+        reason === "solved"
+          ? `🎉 You cracked it! The word was ${answer}. Click to start a new game.`
+          : `🧩 Out of guesses. The word was ${answer}. Click to start a new game.`;
+      gameOverEl.onclick = () => { ws?.send(JSON.stringify({ type: "requestReset" })); gameOverEl.hidden = true; };
+    }
+    function resetClient({ round: r, slots }) {
+      round = r;
+      buildGrid();
+      renderSlots(slots);
+      focusMyTile();
+      showToast("New game started!");
+    }
+
+    // boot
+    (async () => {
+      await ensureLobby();
+      setShareLink();
+      buildGrid();
+      connectWS();
+    })();
+  </script>
+</body>
+</html>
