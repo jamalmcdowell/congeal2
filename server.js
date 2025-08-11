@@ -8,11 +8,13 @@ const { WebSocketServer } = require("ws");
 const fs = require("fs");
 const path = require("path");
 
+console.log(`[boot] file=${__filename} cwd=${process.cwd()}`);
+
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
-// ----- util: small lobby/code generator (no nanoid needed) -----
+// ----- small lobby/code generator (no nanoid needed) -----
 function makeCode(len = 6) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let s = "";
@@ -21,7 +23,6 @@ function makeCode(len = 6) {
 }
 
 // ----- word lists (NYT/Wordle) -----
-// place these files as described below; we fallback to a tiny demo list if missing
 const WORDS_ALLOWED_PATH = path.join(__dirname, "public", "words_allowed.txt");
 const WORDS_ANSWERS_PATH = path.join(__dirname, "public", "words_answers.txt");
 
@@ -33,28 +34,39 @@ function loadWordList(p) {
       .map((w) => w.trim().toUpperCase())
       .filter((w) => /^[A-Z]{5}$/.test(w));
   } catch {
-    return null;
+    return null; // file missing/unreadable
   }
 }
 
-let ALLOWED_LIST = loadWordList(WORDS_ALLOWED_PATH);
-let ANSWER_LIST = loadWordList(WORDS_ANSWERS_PATH);
+// Safe defaults so we ALWAYS have words
+const DEFAULT_WORDS = [
+  "CRANE","SLATE","SMILE","MINTY","NASAL","APPLE","BREAD","CHAIR",
+  "DANCE","EARTH","TIGER","RIVER","STONE","WATER"
+];
 
-// fallback (dev/demo only)
-if (!ALLOWED_LIST || !ANSWER_LIST) {
-  console.warn(
-    "[wordlist] Missing NYT word lists. Using a tiny fallback set. " +
-      "See README in this file for how to fetch the full lists."
-  );
-  const fallback = [
-    "CRANE","SLATE","SMILE","MINTY","NASAL","APPLE","BREAD","CHAIR",
-    "DANCE","EARTH","TIGER","RIVER","STONE","WATER"
-  ];
-  ALLOWED_LIST = fallback.slice();
-  ANSWER_LIST = fallback.slice();
+// Load lists (null → [])
+let ALLOWED_LIST = loadWordList(WORDS_ALLOWED_PATH) || [];
+let ANSWER_LIST  = loadWordList(WORDS_ANSWERS_PATH) || [];
+
+// If both empty, use defaults. If one is empty, mirror the other.
+if (ALLOWED_LIST.length === 0 && ANSWER_LIST.length === 0) {
+  console.warn("[wordlist] No files found; using built-in fallback list.");
+  ALLOWED_LIST = DEFAULT_WORDS.slice();
+  ANSWER_LIST  = DEFAULT_WORDS.slice();
+} else {
+  if (ALLOWED_LIST.length === 0) {
+    console.warn("[wordlist] allowed list empty; mirroring answers.");
+    ALLOWED_LIST = ANSWER_LIST.slice();
+  }
+  if (ANSWER_LIST.length === 0) {
+    console.warn("[wordlist] answers list empty; mirroring allowed.");
+    ANSWER_LIST = ALLOWED_LIST.slice();
+  }
 }
 
-const ALLOWED = new Set(ALLOWED_LIST);
+// Allow union for validation (prevents “not in list” footguns)
+const ALLOWED = new Set([...ALLOWED_LIST, ...ANSWER_LIST]);
+console.log(`[wordlist] allowed:${ALLOWED_LIST.length} answers:${ANSWER_LIST.length}`);
 
 // ----- game state -----
 /*
@@ -73,10 +85,27 @@ const lobbies = new Map();
 function freshSlots() {
   return Array.from({ length: 5 }, () => ({ locked: false, letter: "", byClientId: null }));
 }
+
 function pickAnswer() {
-  return ANSWER_LIST[(Math.random() * ANSWER_LIST.length) | 0];
+  const src = ANSWER_LIST.length ? ANSWER_LIST : DEFAULT_WORDS;
+  return src[(Math.random() * src.length) | 0];
 }
+
+function ensureAnswer(lobby) {
+  if (!lobby.answer || typeof lobby.answer !== "string" || lobby.answer.length !== 5) {
+    lobby.answer = pickAnswer();
+    console.warn(`[lobby ${lobby.id}] assigned fallback answer: ${lobby.answer}`);
+  }
+}
+
 function scoreGuess(guess, answer) {
+  // Hard guard to avoid crash; we should never hit this with ensureAnswer().
+  if (typeof answer !== "string" || answer.length !== 5) {
+    console.error(`[scoreGuess] invalid answer:`, answer);
+    // Return neutral result instead of crashing
+    return Array(5).fill("absent");
+  }
+
   const res = Array(5).fill("absent");
   const a = answer.split("");
   const g = guess.split("");
@@ -96,22 +125,26 @@ function scoreGuess(guess, answer) {
   }
   return res;
 }
+
 function createLobby() {
   const id = makeCode();
   const lobby = {
     id,
     answer: pickAnswer(),
     round: 0,
-    maxRounds: 4,          // ← 4 total guesses
+    maxRounds: 4,          // 4 total guesses
     players: new Map(),
     slots: freshSlots(),
     history: [],
     inProgress: true,
     createdAt: Date.now(),
   };
+  ensureAnswer(lobby);
   lobbies.set(id, lobby);
+  console.log(`[create] lobby=${id} answer=${lobby.answer}`);
   return lobby;
 }
+
 function getShareUrl(req, id) {
   const proto = req.headers["x-forwarded-proto"] || "http";
   const host = req.headers["x-forwarded-host"] || req.headers.host;
@@ -127,6 +160,24 @@ app.get("/create", (req, res) => {
   res.json({ lobbyId: lobby.id, joinUrl: getShareUrl(req, lobby.id) });
 });
 app.get("/health", (_, res) => res.json({ ok: true }));
+
+// (Optional) debugging endpoint (doesn't reveal the answer unless ?reveal=1)
+app.get("/debug", (req, res) => {
+  const reveal = req.query.reveal === "1";
+  const data = [];
+  lobbies.forEach((l) => {
+    data.push({
+      id: l.id,
+      round: l.round,
+      inProgress: l.inProgress,
+      answer: reveal ? l.answer : "(hidden)",
+      hasAnswer: typeof l.answer === "string" && l.answer.length === 5,
+      slots: l.slots,
+      historyLen: l.history.length
+    });
+  });
+  res.json(data);
+});
 
 // ---- websockets ----
 wss.on("connection", (ws, req) => {
@@ -170,7 +221,7 @@ wss.on("connection", (ws, req) => {
   ws.on("message", (buf) => {
     let msg; try { msg = JSON.parse(buf); } catch { return; }
     if (msg.type === "submitLetter") submitLetter(ws, lobby, msg.letter);
-    if (msg.type === "unlockMySlot") unlockMySlot(ws, lobby);         // optional: let player edit before all are locked
+    if (msg.type === "unlockMySlot") unlockMySlot(ws, lobby);
     if (msg.type === "requestReset") if (!lobby.inProgress) resetLobby(lobby);
   });
 
@@ -191,6 +242,9 @@ function submitLetter(ws, lobby, letterRaw) {
     ws.send(JSON.stringify({ type: "error", message: "Game over. Start a new round." }));
     return;
   }
+  // Extra safety: make sure lobby has a valid answer BEFORE any scoring path
+  ensureAnswer(lobby);
+
   const { slot, clientId } = ws.meta;
   const letter = String(letterRaw || "").trim().toUpperCase();
 
@@ -201,27 +255,49 @@ function submitLetter(ws, lobby, letterRaw) {
   const slotState = lobby.slots[slot];
   if (slotState.locked) return; // already locked this round
 
+  // Lock this slot with the letter
   lobby.slots[slot] = { locked: true, letter, byClientId: clientId };
   broadcast(lobby, { type: "slotUpdate", slot, slotState: lobby.slots[slot] });
 
-  // check if all 5 letters locked -> evaluate
-  const allLocked = lobby.slots.every(s => s.locked && s.letter);
-  if (!allLocked) return;
+  // After any lock attempt, see if we can evaluate
+  evaluateIfReady(lobby);
+}
 
-  const guess = lobby.slots.map(s => s.letter).join("");
-  if (!ALLOWED.has(guess)) {
-    // invalid word: DO NOT consume a row; keep letters visible; unlock for edits
-    broadcast(lobby, { type: "invalidGuess", guess });
-    lobby.slots = lobby.slots.map(s => ({ ...s, locked: false })); // keep letters but allow relock
+function evaluateIfReady(lobby) {
+  ensureAnswer(lobby); // guarantee a valid 5-letter answer
+
+  const lockedCount = lobby.slots.filter(s => s.locked).length;
+  if (lockedCount < 5) {
+    const waitingFor = lobby.slots.map((s,i)=>s.locked?null:i).filter(i=>i!==null);
+    broadcast(lobby, { type: "waiting", waitingFor });
+    return;
+  }
+
+  const guess = lobby.slots.map(s => (s.letter || "").toUpperCase()).join("");
+  if (!/^[A-Z]{5}$/.test(guess)) {
+    // Shouldn't happen, but safeguard: unlock to let players fix
+    lobby.slots = lobby.slots.map(s => ({ ...s, locked: false }));
     broadcast(lobby, { type: "rowUnlocked", slots: lobby.slots });
     return;
   }
 
-  // valid: score and persist this row in history (guesses remain on screen)
+  const isValid = ALLOWED.has(guess);
   const colors = scoreGuess(guess, lobby.answer);
   const correct = guess === lobby.answer;
-  lobby.history.push({ guess, colors });
-  broadcast(lobby, { type: "reveal", guess, colors, correct, round: lobby.round });
+
+  // Debug log to verify flow:
+  console.log(`[round ${lobby.round}] guess=${guess} valid=${isValid} answer=${lobby.answer}`);
+
+  // Always reveal & consume a row, even if invalid
+  lobby.history.push({ guess, colors, invalid: !isValid });
+  broadcast(lobby, {
+    type: "reveal",
+    guess,
+    colors,
+    correct,
+    round: lobby.round,
+    invalid: !isValid
+  });
 
   if (correct) {
     lobby.inProgress = false;
@@ -236,7 +312,7 @@ function submitLetter(ws, lobby, letterRaw) {
     return;
   }
 
-  // next row
+  // Next row (fresh editable slots)
   lobby.slots = freshSlots();
   broadcast(lobby, { type: "newRow", round: lobby.round, slots: lobby.slots });
 }
@@ -254,6 +330,8 @@ function resetLobby(lobby) {
   lobby.inProgress = true;
   lobby.history = [];
   lobby.slots = freshSlots();
+  ensureAnswer(lobby);
+  console.log(`[reset] lobby=${lobby.id} answer=${lobby.answer}`);
   broadcast(lobby, { type: "reset", round: 0, slots: lobby.slots });
 }
 
