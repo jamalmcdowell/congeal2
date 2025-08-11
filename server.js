@@ -8,8 +8,6 @@ const { WebSocketServer } = require("ws");
 const fs = require("fs");
 const path = require("path");
 
-console.log(`[boot] file=${__filename} cwd=${process.cwd()}`);
-
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
@@ -20,6 +18,9 @@ function makeCode(len = 6) {
   let s = "";
   for (let i = 0; i < len; i++) s += chars[(Math.random() * chars.length) | 0];
   return s;
+}
+function sanitizeName(s) {
+  return (String(s || "").trim() || "Player").slice(0, 16);
 }
 
 // ----- word lists (NYT/Wordle) -----
@@ -99,13 +100,11 @@ function ensureAnswer(lobby) {
 }
 
 function scoreGuess(guess, answer) {
-  // Hard guard to avoid crash; we should never hit this with ensureAnswer().
+  // Guard against invalid answers
   if (typeof answer !== "string" || answer.length !== 5) {
-    console.error(`[scoreGuess] invalid answer:`, answer);
-    // Return neutral result instead of crashing
+    console.warn("[scoreGuess] invalid answer value:", answer);
     return Array(5).fill("absent");
   }
-
   const res = Array(5).fill("absent");
   const a = answer.split("");
   const g = guess.split("");
@@ -141,7 +140,6 @@ function createLobby() {
   };
   ensureAnswer(lobby);
   lobbies.set(id, lobby);
-  console.log(`[create] lobby=${id} answer=${lobby.answer}`);
   return lobby;
 }
 
@@ -161,7 +159,7 @@ app.get("/create", (req, res) => {
 });
 app.get("/health", (_, res) => res.json({ ok: true }));
 
-// (Optional) debugging endpoint (doesn't reveal the answer unless ?reveal=1)
+// optional debug (add ?reveal=1 to show answers while testing)
 app.get("/debug", (req, res) => {
   const reveal = req.query.reveal === "1";
   const data = [];
@@ -172,7 +170,6 @@ app.get("/debug", (req, res) => {
       inProgress: l.inProgress,
       answer: reveal ? l.answer : "(hidden)",
       hasAnswer: typeof l.answer === "string" && l.answer.length === 5,
-      slots: l.slots,
       historyLen: l.history.length
     });
   });
@@ -183,7 +180,7 @@ app.get("/debug", (req, res) => {
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://localhost");
   const lobbyId = url.searchParams.get("lobby");
-  const name = (url.searchParams.get("name") || "Player").slice(0, 16);
+  const name = sanitizeName(url.searchParams.get("name") || "Player");
 
   if (!lobbyId || !lobbies.has(lobbyId)) {
     ws.send(JSON.stringify({ type: "error", message: "Lobby not found. Use Refresh Room Code to start one." }));
@@ -223,6 +220,10 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "submitLetter") submitLetter(ws, lobby, msg.letter);
     if (msg.type === "unlockMySlot") unlockMySlot(ws, lobby);
     if (msg.type === "requestReset") if (!lobby.inProgress) resetLobby(lobby);
+    if (msg.type === "setName") {
+      ws.meta.name = sanitizeName(msg.name);
+      broadcast(lobby, { type: "roster", players: rosterView(lobby) });
+    }
   });
 
   ws.on("close", () => {
@@ -242,8 +243,7 @@ function submitLetter(ws, lobby, letterRaw) {
     ws.send(JSON.stringify({ type: "error", message: "Game over. Start a new round." }));
     return;
   }
-  // Extra safety: make sure lobby has a valid answer BEFORE any scoring path
-  ensureAnswer(lobby);
+  ensureAnswer(lobby); // make sure we have one
 
   const { slot, clientId } = ws.meta;
   const letter = String(letterRaw || "").trim().toUpperCase();
@@ -285,10 +285,7 @@ function evaluateIfReady(lobby) {
   const colors = scoreGuess(guess, lobby.answer);
   const correct = guess === lobby.answer;
 
-  // Debug log to verify flow:
-  console.log(`[round ${lobby.round}] guess=${guess} valid=${isValid} answer=${lobby.answer}`);
-
-  // Always reveal & consume a row, even if invalid
+  // Reveal & consume a row, even if invalid
   lobby.history.push({ guess, colors, invalid: !isValid });
   broadcast(lobby, {
     type: "reveal",
@@ -331,7 +328,6 @@ function resetLobby(lobby) {
   lobby.history = [];
   lobby.slots = freshSlots();
   ensureAnswer(lobby);
-  console.log(`[reset] lobby=${lobby.id} answer=${lobby.answer}`);
   broadcast(lobby, { type: "reset", round: 0, slots: lobby.slots });
 }
 

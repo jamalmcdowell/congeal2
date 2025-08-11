@@ -44,7 +44,7 @@
       width: 100%;
     }
 
-    .topbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .topbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
     .linkbar { display: flex; gap: 8px; align-items: center; flex: 1; }
     .linkbar input {
       flex: 1; min-width: 260px; padding: 10px 12px; border-radius: 10px; border: 1px solid #273043;
@@ -53,6 +53,12 @@
     button {
       background: var(--accent); color: #0a0f0d; font-weight: 700; border: 0;
       padding: 10px 14px; border-radius: 12px; cursor: pointer;
+    }
+
+    .namebar { display: flex; gap: 8px; align-items: center; margin: 6px 0 12px; }
+    .namebar input {
+      min-width: 160px; padding: 8px 10px; border-radius: 10px; border: 1px solid #273043;
+      background: #0e1320; color: #cfe3ff; font-size: 14px;
     }
 
     /* grid */
@@ -105,6 +111,11 @@
         <button id="newRoom">Refresh Room Code</button>
       </div>
 
+      <div class="namebar">
+        <input id="nameInput" maxlength="16" placeholder="Your name" />
+        <button id="saveName">Save</button>
+      </div>
+
       <div id="grid"></div>
       <div class="roster" id="roster"></div>
       <div class="toast" id="toast"></div>
@@ -123,6 +134,8 @@
     const statusEl = qs("#status");
     const toastEl = qs("#toast");
     const gameOverEl = qs("#gameOver");
+    const nameInput = qs("#nameInput");
+    const saveNameBtn = qs("#saveName");
 
     const params = new URLSearchParams(location.search);
 
@@ -142,6 +155,11 @@
     let round = 0, maxRounds = 4; // FOUR total guesses/rows
     const rows = []; // [{ el, tiles[5] }, ...]
 
+    // Name bootstrap: ?name= takes priority, then stored, else "Player"
+    let displayName =
+      (params.get("name") || localStorage.getItem("name") || "Player").trim().slice(0,16);
+    localStorage.setItem("name", displayName);
+
     // Helpers
     function setStatus(msg) { statusEl.textContent = msg; }
     function showToast(msg) {
@@ -150,7 +168,7 @@
       setTimeout(() => { if (toastEl.textContent === msg) toastEl.textContent = ""; }, 2500);
     }
     function setShareLink() {
-      shareEl.value = location.href;
+      shareEl.value = location.href; // lobby-only link
       copyBtn.onclick = async () => {
         await navigator.clipboard.writeText(shareEl.value);
         showToast("Link copied.");
@@ -197,6 +215,10 @@
 
     // Typing directly into your tile
     document.addEventListener("keydown", (e) => {
+      // don't steal keys from input fields
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === "INPUT" || ae.isContentEditable)) return;
+
       if (mySlot == null) return;
       const tiles = currentRowTiles();
       if (!tiles.length) return;
@@ -224,9 +246,24 @@
       }
     });
 
+    // Save name UI
+    if (nameInput) nameInput.value = displayName;
+    saveNameBtn.onclick = () => {
+      const newName = (nameInput.value || "").trim().slice(0,16) || "Player";
+      displayName = newName;
+      localStorage.setItem("name", newName);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "setName", name: newName }));
+        showToast("Name updated");
+      } else {
+        showToast("Name saved; connecting…");
+      }
+    };
+
     // WebSocket wiring
     function connectWS() {
-      const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?lobby=${params.get("lobby")}`;
+      const nameParam = encodeURIComponent(localStorage.getItem("name") || "Player");
+      const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?lobby=${params.get("lobby")}&name=${nameParam}`;
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => setStatus("connected");
@@ -260,7 +297,7 @@
             break;
 
           case "reveal":
-            renderReveal(msg.guess, msg.colors);
+            renderReveal(msg.round, msg.guess, msg.colors); // use row index from server
             if (msg.invalid) {
               showToast(`“${msg.guess}” is not in the word list (counted).`);
             }
@@ -334,13 +371,13 @@
       t.classList.toggle("locked", !!state.locked);
     }
 
-    function renderReveal(guess, colors) {
-      const tiles = currentRowTiles();
+    function renderReveal(rowIndex, guess, colors) {
+      const tiles = rows[rowIndex]?.tiles || [];
       for (let i = 0; i < 5; i++) {
         const t = tiles[i];
-        t.classList.remove("locked");
+        if (!t) continue;
+        t.classList.remove("locked","correct","present","absent");
         t.textContent = guess[i];
-        t.classList.remove("correct","present","absent");
         t.classList.add(classFor(colors[i]));
         t.style.transform = "scale(1.06)";
         setTimeout(((tt)=>()=>tt.style.transform="scale(1)")(t), 140);
@@ -380,6 +417,7 @@
       setShareLink();
       buildGrid();
       connectWS();
+      if (nameInput) nameInput.value = displayName;
     })();
   </script>
 </body>
