@@ -12,10 +12,10 @@
       --muted: #a0a8b8;
       --text: #e7e9ee;
 
-      /* Wordle-style coloring per your spec */
+      /* Wordle-style coloring */
       --correct: #22c55e;   /* green */
       --present: #eab308;   /* yellow */
-      --absent: #ffffff;    /* white (absent) */
+      --absent: #ffffff;    /* white */
 
       --locked-border: #22c55e;
       --tile-bg: #0e1320;
@@ -103,6 +103,35 @@
       background: #161d29; border: 1px solid #273043; margin-top: 12px;
       cursor: pointer;
     }
+
+    /* modal */
+    .modal {
+      position: fixed; inset: 0; display: none;
+      align-items: center; justify-content: center;
+      background: rgba(6, 9, 14, .6);
+      z-index: 999;
+      backdrop-filter: blur(2px);
+    }
+    .modal.open { display: flex; }
+    .modal .box {
+      background: linear-gradient(180deg, #171b23, #12161d);
+      border: 1px solid #222938; border-radius: 14px; padding: 18px;
+      width: min(640px, 92vw); color: var(--text);
+      box-shadow: 0 20px 60px rgba(0,0,0,.35);
+    }
+    .modal header {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      margin: 0 0 10px 0;
+    }
+    .modal h2 { font-size: 18px; margin: 0; }
+    .xbtn {
+      background: transparent; color: #cfe3ff; border: 1px solid #273043;
+      padding: 6px 10px; border-radius: 10px; cursor: pointer;
+    }
+    .modal ul { margin: 0; padding-left: 18px; }
+    .kbd {
+      border: 1px solid #334155; background: #0b1220; padding: 2px 6px; border-radius: 6px; font-size: 12px;
+    }
   </style>
 </head>
 <body>
@@ -119,6 +148,7 @@
           <button id="copy">Copy Link</button>
         </div>
         <button id="newRoom">Refresh Room Code</button>
+        <button id="howToBtn">How to play</button>
       </div>
 
       <div class="namebar">
@@ -139,6 +169,33 @@
     </div>
   </div>
 
+  <!-- How to play modal -->
+  <div id="howtoModal" class="modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
+    <div class="box" role="document">
+      <header>
+        <h2 id="howtoTitle">How to play</h2>
+        <button id="howtoClose" class="xbtn" aria-label="Close">✖</button>
+      </header>
+      <div>
+        <ul>
+          <li>This is a 5-player co-op Wordle. Each player controls <strong>one letter slot</strong> per row.</li>
+          <li>Type a letter; everyone sees it live. Press <span class="kbd">Enter</span> to <strong>lock</strong> your slot (green border).</li>
+          <li>When all 5 slots are locked, the row is scored and revealed:
+            <ul>
+              <li><strong>Green</strong> = correct letter & position</li>
+              <li><strong>Yellow</strong> = letter is in the word (wrong spot)</li>
+              <li><strong>White</strong> = letter not in the word</li>
+            </ul>
+          </li>
+          <li>You have <strong>5 guesses</strong> to find the word.</li>
+          <li>Share the lobby link so friends can join. Use “Refresh Room Code” to start a fresh lobby.</li>
+          <li>Set your name and pick a <strong>border color</strong> — visible to everyone while typing.</li>
+          <li>Even if a word isn’t in the list, the guess still counts and reveals colors.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Elements
     const qs = (s) => document.querySelector(s);
@@ -154,6 +211,12 @@
     const saveNameBtn = qs("#saveName");
     const colorSelect = qs("#colorSelect");
     const colorPreview = qs("#colorPreview");
+
+    // Modal elements
+    const howToBtn = qs("#howToBtn");
+    const howtoModal = qs("#howtoModal");
+    const howtoClose = qs("#howtoClose");
+    let _modalPrevFocus = null;
 
     const params = new URLSearchParams(location.search);
 
@@ -174,7 +237,7 @@
     const rows = []; // [{ el, tiles[5] }]
     const rosterColors = Array(5).fill(null);
 
-    // Name bootstrap: ?name= first, then stored, else "Player"
+    // Name bootstrap
     let displayName =
       (params.get("name") || localStorage.getItem("name") || "Player").trim().slice(0,16);
     localStorage.setItem("name", displayName);
@@ -220,17 +283,13 @@
     }
 
     function buildColorDropdown() {
-      // Clear options
       colorSelect.innerHTML = "";
       for (const col of PALETTE) {
         const opt = document.createElement("option");
         opt.value = col;
         opt.textContent = labelForColor(col);
-        opt.style.background = col; // some browsers show it
-        opt.style.color = "#0b0f17";
         colorSelect.appendChild(opt);
       }
-      // Set current value
       if (!PALETTE.includes(myColor)) myColor = PALETTE[0];
       colorSelect.value = myColor;
       colorPreview.style.background = myColor;
@@ -245,6 +304,25 @@
         applyCustomBorders();
       };
     }
+
+    // Modal wiring
+    function openHowto() {
+      _modalPrevFocus = document.activeElement;
+      howtoModal.classList.add("open");
+      howtoModal.setAttribute("aria-hidden", "false");
+      document.body.style.overflow = "hidden";
+      howtoClose.focus();
+    }
+    function closeHowto() {
+      howtoModal.classList.remove("open");
+      howtoModal.setAttribute("aria-hidden", "true");
+      document.body.style.overflow = "";
+      if (_modalPrevFocus) _modalPrevFocus.focus();
+    }
+    howToBtn.addEventListener("click", openHowto);
+    howtoClose.addEventListener("click", closeHowto);
+    howtoModal.addEventListener("click", (e) => { if (e.target === howtoModal) closeHowto(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && howtoModal.classList.contains("open")) closeHowto(); });
 
     // Grid
     function buildGrid() {
