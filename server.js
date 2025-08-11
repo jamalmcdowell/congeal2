@@ -1,5 +1,5 @@
 // server.js
-// Multiplayer 5-letter “team Wordle”, 4 guesses, shared link/lobbies.
+// Multiplayer 5-letter “team Wordle”, 5 guesses, shared link/lobbies.
 // Run: node server.js
 
 const express = require("express");
@@ -92,7 +92,7 @@ console.log(`[wordlist] allowed:${ALLOWED_LIST.length} answers:${ANSWER_LIST.len
 /*
 Lobby:
 {
-  id, answer, round (0..3), maxRounds:4,
+  id, answer, round (0..4), maxRounds:5,
   players: Map(slotIndex -> ws),
   slots: [ {locked, letter, byClientId} x5 ],
   history: [ { guess, colors:[], invalid?:boolean } ],
@@ -106,7 +106,7 @@ function freshSlots() {
 }
 function pickAnswer() {
   const src = ANSWER_LIST.length ? ANSWER_LIST : DEFAULT_WORDS;
-  return src[(Math.random() * src.length) | 0];
+  return src[(Math.random() * src.length) | 0]; // random each round
 }
 function ensureAnswer(lobby) {
   if (!lobby.answer || typeof lobby.answer !== "string" || lobby.answer.length !== 5) {
@@ -141,7 +141,7 @@ function createLobby() {
     id,
     answer: pickAnswer(),
     round: 0,
-    maxRounds: 4,
+    maxRounds: 5,            // ← FIVE total guesses now
     players: new Map(),
     slots: freshSlots(),
     history: [],
