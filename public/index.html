@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Congeal</title>
+  <title>Team Word Guess (5-Player)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
@@ -29,7 +29,7 @@
       color: var(--text); display: grid; place-items: center; padding: 20px;
     }
 
-    .wrap { width: 100%; max-width: 860px; }
+    .wrap { width: 100%; max-width: 920px; }
     header {
       display: flex; align-items: center; justify-content: space-between;
       margin-bottom: 16px; gap: 10px;
@@ -45,7 +45,7 @@
     }
 
     .topbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-    .linkbar { display: flex; gap: 8px; align-items: center; flex: 1; }
+    .linkbar { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 340px; }
     .linkbar input {
       flex: 1; min-width: 260px; padding: 10px 12px; border-radius: 10px; border: 1px solid #273043;
       background: #0e1320; color: #cfe3ff; font-size: 14px;
@@ -55,11 +55,19 @@
       padding: 10px 14px; border-radius: 12px; cursor: pointer;
     }
 
-    .namebar { display: flex; gap: 8px; align-items: center; margin: 6px 0 12px; }
+    .namebar { display: flex; gap: 8px; align-items: center; margin: 6px 0 12px; flex-wrap: wrap; }
     .namebar input {
       min-width: 160px; padding: 8px 10px; border-radius: 10px; border: 1px solid #273043;
       background: #0e1320; color: #cfe3ff; font-size: 14px;
     }
+
+    .colorbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .swatch {
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 2px solid #0e1320; outline: 2px solid #273043;
+      cursor: pointer;
+    }
+    .swatch.selected { outline: 3px solid #e2e8f0; }
 
     /* grid */
     #grid { display: grid; gap: 10px; justify-content: center; }
@@ -73,19 +81,22 @@
       transition: transform .08s ease, border-color .15s ease, background .15s ease;
     }
     .tile.focus { box-shadow: 0 0 0 3px rgba(110,231,183,.35); }
-    .tile.locked { border-color: var(--locked-border); }
+    .tile.locked { border-color: var(--locked-border) !important; } /* keep green when submitted */
 
     /* reveal colors */
-    .tile.correct { background: var(--correct); border-color: #16a34a; color: #081207; }
-    .tile.present { background: var(--present); border-color: #9e7d05; color: #0a0900; }
-    .tile.absent  { background: var(--absent);  border-color: #cbd5e1; color: #0b0f17; }
+    .tile.correct { background: var(--correct); border-color: #16a34a !important; color: #081207; }
+    .tile.present { background: var(--present); border-color: #9e7d05 !important; color: #0a0900; }
+    .tile.absent  { background: var(--absent);  border-color: #cbd5e1 !important; color: #0b0f17; }
 
     .roster { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 8px; }
     .slotBadge {
       padding: 6px 8px; border-radius: 10px; background: #0e1420; border: 1px solid #222938;
-      text-align: center; font-size: 12px; color: var(--muted);
+      text-align: center; font-size: 12px; color: var(--muted); display: flex; justify-content: center; align-items: center; gap: 6px;
     }
-    .slotBadge.occupied { color: #b7c0d9; border-color: #3a445a; }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%; border: 1px solid #1f2937;
+      display: inline-block;
+    }
 
     .toast { margin-top: 10px; color: #ffd19a; min-height: 20px; }
     .gameOver {
@@ -98,7 +109,7 @@
 <body>
   <div class="wrap">
     <header>
-      <h1>Congeal</h1>
+      <h1>Team Word Guess (5-Player)</h1>
       <div class="meta" id="status">connecting…</div>
     </header>
 
@@ -114,6 +125,11 @@
       <div class="namebar">
         <input id="nameInput" maxlength="16" placeholder="Your name" />
         <button id="saveName">Save</button>
+      </div>
+
+      <div class="colorbar" id="colorbar">
+        <span style="color:#a0a8b8;font-size:14px;">Border color:</span>
+        <!-- swatches injected by JS -->
       </div>
 
       <div id="grid"></div>
@@ -136,6 +152,7 @@
     const gameOverEl = qs("#gameOver");
     const nameInput = qs("#nameInput");
     const saveNameBtn = qs("#saveName");
+    const colorbar = qs("#colorbar");
 
     const params = new URLSearchParams(location.search);
 
@@ -154,11 +171,16 @@
     let ws, mySlot = null;
     let round = 0, maxRounds = 4; // 4 rows
     const rows = []; // [{ el, tiles[5] }]
+    const rosterColors = Array(5).fill(null);
 
     // Name bootstrap: ?name= first, then stored, else "Player"
     let displayName =
       (params.get("name") || localStorage.getItem("name") || "Player").trim().slice(0,16);
     localStorage.setItem("name", displayName);
+
+    // Color palette (must match server)
+    const PALETTE = ["#60A5FA","#F472B6","#F59E0B","#A78BFA","#14B8A6","#EF4444","#22D3EE","#FB7185","#8B5CF6","#F97316"];
+    let myColor = localStorage.getItem("borderColor") || PALETTE[0];
 
     // Helpers
     function setStatus(msg) { statusEl.textContent = msg; }
@@ -178,6 +200,30 @@
         const data = await res.json();
         location.href = data.joinUrl;
       };
+    }
+
+    function buildPalette() {
+      // clear any previous swatches
+      [...colorbar.querySelectorAll(".swatch")].forEach(e=>e.remove());
+      PALETTE.forEach(col => {
+        const b = document.createElement("button");
+        b.className = "swatch" + (col === myColor ? " selected" : "");
+        b.style.background = col;
+        b.title = col;
+        b.onclick = () => {
+          myColor = col;
+          localStorage.setItem("borderColor", myColor);
+          // update selection ring
+          [...colorbar.querySelectorAll(".swatch")].forEach(e=>e.classList.toggle("selected", e.title === myColor));
+          // inform server
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "setColor", color: myColor }));
+          }
+          // update current row borders immediately
+          applyCustomBorders();
+        };
+        colorbar.appendChild(b);
+      });
     }
 
     // Grid
@@ -213,6 +259,23 @@
       if (tile) tile.classList.remove("focus");
     }
 
+    // Apply per-slot custom borders to the current row (only when not locked/revealed)
+    function applyCustomBorders() {
+      const tiles = currentRowTiles();
+      for (let i = 0; i < 5; i++) {
+        const t = tiles[i];
+        if (!t) continue;
+        const isLocked = t.classList.contains("locked");
+        const isRevealed = t.classList.contains("correct") || t.classList.contains("present") || t.classList.contains("absent");
+        if (!isLocked && !isRevealed) {
+          const col = rosterColors[i] || "#273043";
+          t.style.borderColor = col;
+        } else {
+          t.style.borderColor = ""; // let locked/reveal CSS win
+        }
+      }
+    }
+
     // Typing directly into your tile (with live preview)
     document.addEventListener("keydown", (e) => {
       // don't steal keys from inputs
@@ -233,33 +296,39 @@
         const L = e.key.toUpperCase();
         myTile.textContent = L;
         ws?.send(JSON.stringify({ type: "previewLetter", letter: L }));
+        applyCustomBorders();
       } else if (e.key === "Backspace") {
         e.preventDefault();
         if (myTile.classList.contains("locked")) return;
         myTile.textContent = "";
         ws?.send(JSON.stringify({ type: "previewLetter", letter: "" }));
+        applyCustomBorders();
       } else if (e.key === "Enter") {
         e.preventDefault();
         const letter = (myTile.textContent || "").trim().toUpperCase();
         if (!/^[A-Z]$/.test(letter)) { showToast("Type one letter A–Z in your tile."); return; }
-        myTile.classList.add("locked");
+        myTile.classList.add("locked"); // will turn green via CSS
         ws?.send(JSON.stringify({ type: "submitLetter", letter }));
+        applyCustomBorders();
       }
     });
 
-    // Save name UI
-    if (nameInput) nameInput.value = displayName;
-    saveNameBtn.onclick = () => {
-      const newName = (nameInput.value || "").trim().slice(0,16) || "Player";
-      displayName = newName;
-      localStorage.setItem("name", newName);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "setName", name: newName }));
-        showToast("Name updated");
-      } else {
-        showToast("Name saved; connecting…");
-      }
-    };
+    // UI: name + palette
+    function initIdentityUI() {
+      if (nameInput) nameInput.value = displayName;
+      saveNameBtn.onclick = () => {
+        const newName = (nameInput.value || "").trim().slice(0,16) || "Player";
+        displayName = newName;
+        localStorage.setItem("name", newName);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "setName", name: newName }));
+          showToast("Name updated");
+        } else {
+          showToast("Name saved; connecting…");
+        }
+      };
+      buildPalette();
+    }
 
     // WebSocket
     function connectWS() {
@@ -267,7 +336,11 @@
       const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?lobby=${params.get("lobby")}&name=${nameParam}`;
       ws = new WebSocket(wsUrl);
 
-      ws.onopen = () => setStatus("connected");
+      ws.onopen = () => {
+        setStatus("connected");
+        // send preferred color after connect
+        if (myColor) ws.send(JSON.stringify({ type: "setColor", color: myColor }));
+      };
       ws.onclose = () => setStatus("disconnected");
       ws.onerror = () => setStatus("connection error");
 
@@ -286,15 +359,22 @@
             renderHistory(msg.history);
             renderSlots(msg.slots);
             setShareLink();
+            initIdentityUI();
             focusMyTile();
             break;
 
           case "roster":
             renderRoster(msg.players);
+            // update color map
+            for (const p of msg.players) {
+              rosterColors[p.slot] = p.color || null;
+            }
+            applyCustomBorders();
             break;
 
           case "slotUpdate":
             applySlot(msg.slot, msg.slotState);
+            applyCustomBorders();
             break;
 
           case "reveal":
@@ -304,11 +384,13 @@
 
           case "newRow":
             round = msg.round;
+            applyCustomBorders();
             focusMyTile();
             break;
 
           case "rowUnlocked": // rare safeguard path
             renderSlots(msg.slots);
+            applyCustomBorders();
             focusMyTile();
             break;
 
@@ -336,8 +418,14 @@
       for (const p of players) {
         const d = document.createElement("div");
         d.className = "slotBadge" + (p.occupied ? " occupied" : "");
-        d.textContent = p.occupied ? `Slot ${p.slot+1} — ${p.name || "Player"}`
-                                   : `Slot ${p.slot+1} — (open)`;
+        const dot = document.createElement("span");
+        dot.className = "dot";
+        if (p.color) dot.style.background = p.color;
+        d.appendChild(dot);
+        const label = document.createElement("span");
+        label.textContent = p.occupied ? `Slot ${p.slot+1} — ${p.name || "Player"}`
+                                       : `Slot ${p.slot+1} — (open)`;
+        d.appendChild(label);
         rosterEl.appendChild(d);
       }
     }
@@ -351,6 +439,7 @@
           t.textContent = h.guess[c];
           t.classList.remove("locked");
           t.classList.add(classFor(h.colors[c]));
+          t.style.borderColor = ""; // let reveal border win
         }
       }
     }
@@ -363,6 +452,8 @@
         if (!t) continue;
         t.textContent = s.letter || "";
         t.classList.toggle("locked", !!s.locked);
+        if (!s.locked) t.classList.remove("correct","present","absent"); // ensure editing look
+        t.style.borderColor = ""; // will reapply via applyCustomBorders()
       }
     }
 
@@ -371,6 +462,8 @@
       if (!t) return;
       t.textContent = state.letter || "";
       t.classList.toggle("locked", !!state.locked);
+      if (!state.locked) t.classList.remove("correct","present","absent");
+      t.style.borderColor = ""; // reapply via applyCustomBorders
     }
 
     function renderReveal(rowIndex, guess, colors) {
@@ -381,6 +474,7 @@
         t.classList.remove("locked","correct","present","absent");
         t.textContent = guess[i];
         t.classList.add(classFor(colors[i]));
+        t.style.borderColor = ""; // reveal style controls border
         t.style.transform = "scale(1.06)";
         setTimeout(((tt)=>()=>tt.style.transform="scale(1)")(t), 140);
       }
@@ -409,6 +503,7 @@
       round = r;
       buildGrid();
       renderSlots(slots);
+      applyCustomBorders();
       focusMyTile();
       showToast("New game started!");
     }
@@ -419,7 +514,9 @@
       setShareLink();
       buildGrid();
       connectWS();
+      // init UI defaults
       if (nameInput) nameInput.value = displayName;
+      buildPalette();
     })();
   </script>
 </body>

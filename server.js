@@ -23,6 +23,30 @@ function sanitizeName(s) {
   return (String(s || "").trim() || "Player").slice(0, 16);
 }
 
+// Allowed color palette (no "locked" green to avoid confusion)
+const COLOR_PALETTE = [
+  "#60A5FA", // blue
+  "#F472B6", // pink
+  "#F59E0B", // amber
+  "#A78BFA", // violet
+  "#14B8A6", // teal
+  "#EF4444", // red
+  "#22D3EE", // cyan
+  "#FB7185", // rose
+  "#8B5CF6", // indigo
+  "#F97316"  // orange
+];
+function sanitizeColor(c) {
+  const up = String(c || "").trim().toUpperCase();
+  return COLOR_PALETTE.includes(up) ? up : null;
+}
+function pickAvailableColor(lobby) {
+  const used = new Set();
+  lobby.players.forEach(ws => { if (ws?.meta?.color) used.add(ws.meta.color); });
+  for (const c of COLOR_PALETTE) if (!used.has(c)) return c;
+  return COLOR_PALETTE[(Math.random() * COLOR_PALETTE.length) | 0];
+}
+
 // ----- word lists -----
 const WORDS_ALLOWED_PATH = path.join(__dirname, "public", "words_allowed.txt");
 const WORDS_ANSWERS_PATH = path.join(__dirname, "public", "words_answers.txt");
@@ -61,7 +85,6 @@ if (ALLOWED_LIST.length === 0 && ANSWER_LIST.length === 0) {
     ANSWER_LIST = ALLOWED_LIST.slice();
   }
 }
-
 const ALLOWED = new Set([...ALLOWED_LIST, ...ANSWER_LIST]);
 console.log(`[wordlist] allowed:${ALLOWED_LIST.length} answers:${ANSWER_LIST.length}`);
 
@@ -176,7 +199,7 @@ wss.on("connection", (ws, req) => {
   if (assigned === null) { ws.send(JSON.stringify({ type:"error", message:"Lobby full (5/5)." })); ws.close(); return; }
 
   const clientId = makeCode(8);
-  ws.meta = { lobbyId, slot: assigned, clientId, name };
+  ws.meta = { lobbyId, slot: assigned, clientId, name, color: pickAvailableColor(lobby) };
   lobby.players.set(assigned, ws);
 
   // welcome
@@ -197,6 +220,15 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "setName") {
       ws.meta.name = sanitizeName(msg.name);
       broadcast(lobby, { type: "roster", players: rosterView(lobby) });
+    }
+    if (msg.type === "setColor") {
+      const safe = sanitizeColor(msg.color);
+      if (safe) {
+        ws.meta.color = safe;
+        broadcast(lobby, { type: "roster", players: rosterView(lobby) });
+      } else {
+        ws.send(JSON.stringify({ type: "error", message: "Invalid color." }));
+      }
     }
   });
 
@@ -286,7 +318,7 @@ function unlockMySlot(ws, lobby) {
 }
 
 function resetLobby(lobby) {
-  lobby.answer = pickAnswer();
+  lobby.answer = pickAnswer(); // random word from the list each round
   lobby.round = 0;
   lobby.inProgress = true;
   lobby.history = [];
@@ -298,7 +330,7 @@ function resetLobby(lobby) {
 function rosterView(lobby) {
   return Array.from({ length: 5 }, (_, i) => {
     const ws = lobby.players.get(i);
-    return { slot: i, occupied: !!ws, name: ws?.meta?.name || null };
+    return { slot: i, occupied: !!ws, name: ws?.meta?.name || null, color: ws?.meta?.color || null };
   });
 }
 function broadcast(lobby, payload) {
