@@ -12,7 +12,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
-// ----- small lobby/code generator (no nanoid needed) -----
+// ----- utils -----
 function makeCode(len = 6) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let s = "";
@@ -23,7 +23,7 @@ function sanitizeName(s) {
   return (String(s || "").trim() || "Player").slice(0, 16);
 }
 
-// ----- word lists (NYT/Wordle) -----
+// ----- word lists -----
 const WORDS_ALLOWED_PATH = path.join(__dirname, "public", "words_allowed.txt");
 const WORDS_ANSWERS_PATH = path.join(__dirname, "public", "words_answers.txt");
 
@@ -35,21 +35,18 @@ function loadWordList(p) {
       .map((w) => w.trim().toUpperCase())
       .filter((w) => /^[A-Z]{5}$/.test(w));
   } catch {
-    return null; // file missing/unreadable
+    return null;
   }
 }
 
-// Safe defaults so we ALWAYS have words
 const DEFAULT_WORDS = [
   "CRANE","SLATE","SMILE","MINTY","NASAL","APPLE","BREAD","CHAIR",
   "DANCE","EARTH","TIGER","RIVER","STONE","WATER"
 ];
 
-// Load lists (null → [])
 let ALLOWED_LIST = loadWordList(WORDS_ALLOWED_PATH) || [];
 let ANSWER_LIST  = loadWordList(WORDS_ANSWERS_PATH) || [];
 
-// If both empty, use defaults. If one is empty, mirror the other.
 if (ALLOWED_LIST.length === 0 && ANSWER_LIST.length === 0) {
   console.warn("[wordlist] No files found; using built-in fallback list.");
   ALLOWED_LIST = DEFAULT_WORDS.slice();
@@ -65,7 +62,6 @@ if (ALLOWED_LIST.length === 0 && ANSWER_LIST.length === 0) {
   }
 }
 
-// Allow union for validation (prevents “not in list” footguns)
 const ALLOWED = new Set([...ALLOWED_LIST, ...ANSWER_LIST]);
 console.log(`[wordlist] allowed:${ALLOWED_LIST.length} answers:${ANSWER_LIST.length}`);
 
@@ -76,31 +72,26 @@ Lobby:
   id, answer, round (0..3), maxRounds:4,
   players: Map(slotIndex -> ws),
   slots: [ {locked, letter, byClientId} x5 ],
-  history: [ { guess, colors:[] } ],
+  history: [ { guess, colors:[], invalid?:boolean } ],
   inProgress: boolean
 }
 */
-
 const lobbies = new Map();
 
 function freshSlots() {
   return Array.from({ length: 5 }, () => ({ locked: false, letter: "", byClientId: null }));
 }
-
 function pickAnswer() {
   const src = ANSWER_LIST.length ? ANSWER_LIST : DEFAULT_WORDS;
   return src[(Math.random() * src.length) | 0];
 }
-
 function ensureAnswer(lobby) {
   if (!lobby.answer || typeof lobby.answer !== "string" || lobby.answer.length !== 5) {
     lobby.answer = pickAnswer();
     console.warn(`[lobby ${lobby.id}] assigned fallback answer: ${lobby.answer}`);
   }
 }
-
 function scoreGuess(guess, answer) {
-  // Guard against invalid answers
   if (typeof answer !== "string" || answer.length !== 5) {
     console.warn("[scoreGuess] invalid answer value:", answer);
     return Array(5).fill("absent");
@@ -108,7 +99,6 @@ function scoreGuess(guess, answer) {
   const res = Array(5).fill("absent");
   const a = answer.split("");
   const g = guess.split("");
-
   const remaining = {};
   for (let i = 0; i < 5; i++) {
     if (g[i] === a[i]) res[i] = "correct";
@@ -117,10 +107,7 @@ function scoreGuess(guess, answer) {
   for (let i = 0; i < 5; i++) {
     if (res[i] === "correct") continue;
     const L = g[i];
-    if (remaining[L] > 0) {
-      res[i] = "present";
-      remaining[L]--;
-    }
+    if (remaining[L] > 0) { res[i] = "present"; remaining[L]--; }
   }
   return res;
 }
@@ -131,7 +118,7 @@ function createLobby() {
     id,
     answer: pickAnswer(),
     round: 0,
-    maxRounds: 4,          // 4 total guesses
+    maxRounds: 4,
     players: new Map(),
     slots: freshSlots(),
     history: [],
@@ -142,7 +129,6 @@ function createLobby() {
   lobbies.set(id, lobby);
   return lobby;
 }
-
 function getShareUrl(req, id) {
   const proto = req.headers["x-forwarded-proto"] || "http";
   const host = req.headers["x-forwarded-host"] || req.headers.host;
@@ -152,22 +138,18 @@ function getShareUrl(req, id) {
 // static client
 app.use(express.static("public"));
 
-// create/join endpoints
+// REST
 app.get("/create", (req, res) => {
   const lobby = createLobby();
   res.json({ lobbyId: lobby.id, joinUrl: getShareUrl(req, lobby.id) });
 });
 app.get("/health", (_, res) => res.json({ ok: true }));
-
-// optional debug (add ?reveal=1 to show answers while testing)
 app.get("/debug", (req, res) => {
   const reveal = req.query.reveal === "1";
   const data = [];
   lobbies.forEach((l) => {
     data.push({
-      id: l.id,
-      round: l.round,
-      inProgress: l.inProgress,
+      id: l.id, round: l.round, inProgress: l.inProgress,
       answer: reveal ? l.answer : "(hidden)",
       hasAnswer: typeof l.answer === "string" && l.answer.length === 5,
       historyLen: l.history.length
@@ -184,19 +166,14 @@ wss.on("connection", (ws, req) => {
 
   if (!lobbyId || !lobbies.has(lobbyId)) {
     ws.send(JSON.stringify({ type: "error", message: "Lobby not found. Use Refresh Room Code to start one." }));
-    ws.close();
-    return;
+    ws.close(); return;
   }
   const lobby = lobbies.get(lobbyId);
 
   // assign a free slot 0..4
   let assigned = null;
   for (let i = 0; i < 5; i++) if (!lobby.players.has(i)) { assigned = i; break; }
-  if (assigned === null) {
-    ws.send(JSON.stringify({ type: "error", message: "Lobby full (5/5)." }));
-    ws.close();
-    return;
-  }
+  if (assigned === null) { ws.send(JSON.stringify({ type:"error", message:"Lobby full (5/5)." })); ws.close(); return; }
 
   const clientId = makeCode(8);
   ws.meta = { lobbyId, slot: assigned, clientId, name };
@@ -205,21 +182,18 @@ wss.on("connection", (ws, req) => {
   // welcome
   ws.send(JSON.stringify({
     type: "join",
-    lobbyId,
-    slot: assigned,
-    name,
-    maxRounds: lobby.maxRounds,
-    round: lobby.round,
-    history: lobby.history,
-    slots: lobby.slots,
+    lobbyId, slot: assigned, name,
+    maxRounds: lobby.maxRounds, round: lobby.round,
+    history: lobby.history, slots: lobby.slots,
   }));
   broadcast(lobby, { type: "roster", players: rosterView(lobby) });
 
   ws.on("message", (buf) => {
     let msg; try { msg = JSON.parse(buf); } catch { return; }
-    if (msg.type === "submitLetter") submitLetter(ws, lobby, msg.letter);
-    if (msg.type === "unlockMySlot") unlockMySlot(ws, lobby);
-    if (msg.type === "requestReset") if (!lobby.inProgress) resetLobby(lobby);
+    if (msg.type === "previewLetter") previewLetter(ws, lobby, msg.letter);
+    if (msg.type === "submitLetter")  submitLetter(ws, lobby, msg.letter);
+    if (msg.type === "unlockMySlot")  unlockMySlot(ws, lobby);
+    if (msg.type === "requestReset")  if (!lobby.inProgress) resetLobby(lobby);
     if (msg.type === "setName") {
       ws.meta.name = sanitizeName(msg.name);
       broadcast(lobby, { type: "roster", players: rosterView(lobby) });
@@ -238,33 +212,33 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-function submitLetter(ws, lobby, letterRaw) {
-  if (!lobby.inProgress) {
-    ws.send(JSON.stringify({ type: "error", message: "Game over. Start a new round." }));
-    return;
-  }
-  ensureAnswer(lobby); // make sure we have one
+function previewLetter(ws, lobby, letterRaw) {
+  if (!lobby.inProgress) return;
+  const { slot, clientId } = ws.meta;
+  const raw = String(letterRaw ?? "").toUpperCase();
+  const letter = /^[A-Z]$/.test(raw) ? raw : "";       // allow empty to clear
+  if (lobby.slots[slot]?.locked) return;               // ignore if already locked
+  lobby.slots[slot] = { locked: false, letter, byClientId: clientId };
+  broadcast(lobby, { type: "slotUpdate", slot, slotState: lobby.slots[slot] });
+}
 
+function submitLetter(ws, lobby, letterRaw) {
+  if (!lobby.inProgress) { ws.send(JSON.stringify({ type: "error", message: "Game over. Start a new round." })); return; }
+  ensureAnswer(lobby);
   const { slot, clientId } = ws.meta;
   const letter = String(letterRaw || "").trim().toUpperCase();
-
-  if (!/^[A-Z]$/.test(letter)) {
-    ws.send(JSON.stringify({ type: "error", message: "Enter one A–Z letter." }));
-    return;
-  }
+  if (!/^[A-Z]$/.test(letter)) { ws.send(JSON.stringify({ type:"error", message:"Enter one A–Z letter." })); return; }
   const slotState = lobby.slots[slot];
-  if (slotState.locked) return; // already locked this round
+  if (slotState.locked) return;
 
-  // Lock this slot with the letter
   lobby.slots[slot] = { locked: true, letter, byClientId: clientId };
   broadcast(lobby, { type: "slotUpdate", slot, slotState: lobby.slots[slot] });
 
-  // After any lock attempt, see if we can evaluate
   evaluateIfReady(lobby);
 }
 
 function evaluateIfReady(lobby) {
-  ensureAnswer(lobby); // guarantee a valid 5-letter answer
+  ensureAnswer(lobby);
 
   const lockedCount = lobby.slots.filter(s => s.locked).length;
   if (lockedCount < 5) {
@@ -275,7 +249,6 @@ function evaluateIfReady(lobby) {
 
   const guess = lobby.slots.map(s => (s.letter || "").toUpperCase()).join("");
   if (!/^[A-Z]{5}$/.test(guess)) {
-    // Shouldn't happen, but safeguard: unlock to let players fix
     lobby.slots = lobby.slots.map(s => ({ ...s, locked: false }));
     broadcast(lobby, { type: "rowUnlocked", slots: lobby.slots });
     return;
@@ -285,16 +258,8 @@ function evaluateIfReady(lobby) {
   const colors = scoreGuess(guess, lobby.answer);
   const correct = guess === lobby.answer;
 
-  // Reveal & consume a row, even if invalid
   lobby.history.push({ guess, colors, invalid: !isValid });
-  broadcast(lobby, {
-    type: "reveal",
-    guess,
-    colors,
-    correct,
-    round: lobby.round,
-    invalid: !isValid
-  });
+  broadcast(lobby, { type: "reveal", guess, colors, correct, round: lobby.round, invalid: !isValid });
 
   if (correct) {
     lobby.inProgress = false;
@@ -309,7 +274,6 @@ function evaluateIfReady(lobby) {
     return;
   }
 
-  // Next row (fresh editable slots)
   lobby.slots = freshSlots();
   broadcast(lobby, { type: "newRow", round: lobby.round, slots: lobby.slots });
 }

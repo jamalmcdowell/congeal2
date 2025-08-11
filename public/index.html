@@ -139,7 +139,7 @@
 
     const params = new URLSearchParams(location.search);
 
-    // Ensure we have a lobby code in the URL; otherwise create one.
+    // Ensure we have a lobby code; else create one.
     async function ensureLobby() {
       if (!params.get("lobby")) {
         const res = await fetch("/create");
@@ -152,10 +152,10 @@
 
     // State
     let ws, mySlot = null;
-    let round = 0, maxRounds = 4; // FOUR total guesses/rows
-    const rows = []; // [{ el, tiles[5] }, ...]
+    let round = 0, maxRounds = 4; // 4 rows
+    const rows = []; // [{ el, tiles[5] }]
 
-    // Name bootstrap: ?name= takes priority, then stored, else "Player"
+    // Name bootstrap: ?name= first, then stored, else "Player"
     let displayName =
       (params.get("name") || localStorage.getItem("name") || "Player").trim().slice(0,16);
     localStorage.setItem("name", displayName);
@@ -168,7 +168,7 @@
       setTimeout(() => { if (toastEl.textContent === msg) toastEl.textContent = ""; }, 2500);
     }
     function setShareLink() {
-      shareEl.value = location.href; // lobby-only link
+      shareEl.value = location.href;
       copyBtn.onclick = async () => {
         await navigator.clipboard.writeText(shareEl.value);
         showToast("Link copied.");
@@ -176,7 +176,7 @@
       newRoomBtn.onclick = async () => {
         const res = await fetch("/create");
         const data = await res.json();
-        location.href = data.joinUrl; // go to a fresh lobby
+        location.href = data.joinUrl;
       };
     }
 
@@ -213,9 +213,9 @@
       if (tile) tile.classList.remove("focus");
     }
 
-    // Typing directly into your tile
+    // Typing directly into your tile (with live preview)
     document.addEventListener("keydown", (e) => {
-      // don't steal keys from input fields
+      // don't steal keys from inputs
       const ae = document.activeElement;
       if (ae && (ae.tagName === "INPUT" || ae.isContentEditable)) return;
 
@@ -224,21 +224,22 @@
       if (!tiles.length) return;
       const myTile = tiles[mySlot];
 
-      // If already locked, ignore typing
       if (myTile.classList.contains("locked") &&
           e.key !== "Enter" && e.key !== "Backspace") return;
 
       if (/^[a-zA-Z]$/.test(e.key)) {
         e.preventDefault();
         if (myTile.classList.contains("locked")) return;
-        myTile.textContent = e.key.toUpperCase();
+        const L = e.key.toUpperCase();
+        myTile.textContent = L;
+        ws?.send(JSON.stringify({ type: "previewLetter", letter: L }));
       } else if (e.key === "Backspace") {
         e.preventDefault();
         if (myTile.classList.contains("locked")) return;
         myTile.textContent = "";
+        ws?.send(JSON.stringify({ type: "previewLetter", letter: "" }));
       } else if (e.key === "Enter") {
         e.preventDefault();
-        // lock-in this letter (border turns green) and notify server
         const letter = (myTile.textContent || "").trim().toUpperCase();
         if (!/^[A-Z]$/.test(letter)) { showToast("Type one letter A–Z in your tile."); return; }
         myTile.classList.add("locked");
@@ -260,7 +261,7 @@
       }
     };
 
-    // WebSocket wiring
+    // WebSocket
     function connectWS() {
       const nameParam = encodeURIComponent(localStorage.getItem("name") || "Player");
       const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?lobby=${params.get("lobby")}&name=${nameParam}`;
@@ -297,14 +298,17 @@
             break;
 
           case "reveal":
-            renderReveal(msg.round, msg.guess, msg.colors); // use row index from server
-            if (msg.invalid) {
-              showToast(`“${msg.guess}” is not in the word list (counted).`);
-            }
+            renderReveal(msg.round, msg.guess, msg.colors); // color the exact row
+            if (msg.invalid) showToast(`“${msg.guess}” is not in the word list (counted).`);
             break;
 
           case "newRow":
             round = msg.round;
+            focusMyTile();
+            break;
+
+          case "rowUnlocked": // rare safeguard path
+            renderSlots(msg.slots);
             focusMyTile();
             break;
 
@@ -326,7 +330,7 @@
       };
     }
 
-    // Rendering helpers
+    // Rendering
     function renderRoster(players) {
       rosterEl.innerHTML = "";
       for (const p of players) {
@@ -339,7 +343,6 @@
     }
 
     function renderHistory(history) {
-      // Completed rows remain visible
       for (let r = 0; r < history.length; r++) {
         const h = history[r];
         const tiles = rows[r].tiles;
@@ -353,7 +356,6 @@
     }
 
     function renderSlots(slots) {
-      // Only affect the CURRENT row (previous rows are already revealed)
       const tiles = currentRowTiles();
       for (let i = 0; i < 5; i++) {
         const s = slots[i];
@@ -387,7 +389,7 @@
     function classFor(color) {
       if (color === "correct") return "correct";
       if (color === "present") return "present";
-      return "absent"; // white for absent
+      return "absent";
     }
 
     function endGame({ reason, answer }) {
