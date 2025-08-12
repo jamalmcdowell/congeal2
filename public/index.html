@@ -86,6 +86,14 @@
     .tile.focus { box-shadow: 0 0 0 3px rgba(110,231,183,.35); }
     .tile.locked { border-color: var(--locked-border) !important; } /* keep green when submitted */
 
+    /* assist bar under current row */
+    #assist { display: grid; grid-template-columns: repeat(5, 64px); gap: 10px; justify-content: center; margin: 6px 0 8px; }
+    #assist .fillBtn {
+      padding: 6px 10px; border-radius: 8px; border: 1px solid #273043;
+      background: #0f1626; color: #cfe3ff; font-size: 12px; cursor: pointer;
+    }
+    #assist .fillBtn[disabled] { opacity: .45; cursor: not-allowed; }
+
     /* reveal colors */
     .tile.correct { background: var(--correct); border-color: #16a34a !important; color: #081207; }
     .tile.present { background: var(--present); border-color: #9e7d05 !important; color: #0a0900; }
@@ -163,6 +171,9 @@
       </div>
 
       <div id="grid"></div>
+      <!-- Assist bar: fill unoccupied slots with the correct letter (current row only) -->
+      <div id="assist"></div>
+
       <div class="roster" id="roster"></div>
       <div class="toast" id="toast"></div>
       <div class="gameOver" id="gameOver" hidden></div>
@@ -180,6 +191,7 @@
         <ul>
           <li>This is a 5-player co-op Wordle. Each player controls <strong>one letter slot</strong> per row.</li>
           <li>Type a letter; everyone sees it live. Press <span class="kbd">Enter</span> to <strong>lock</strong> your slot (green border).</li>
+          <li>If a slot is <strong>unoccupied</strong>, use the <em>Fill</em> button under it to auto-lock the correct letter.</li>
           <li>When all 5 slots are locked, the row is scored and revealed:
             <ul>
               <li><strong>Green</strong> = correct letter & position</li>
@@ -200,6 +212,7 @@
     // Elements
     const qs = (s) => document.querySelector(s);
     const gridEl = qs("#grid");
+    const assistEl = qs("#assist");
     const rosterEl = qs("#roster");
     const shareEl = qs("#share");
     const copyBtn = qs("#copy");
@@ -236,6 +249,7 @@
     let round = 0, maxRounds = 5; // default 5; server will confirm
     const rows = []; // [{ el, tiles[5] }]
     const rosterColors = Array(5).fill(null);
+    const rosterOccupied = Array(5).fill(false);
 
     // Name bootstrap
     let displayName =
@@ -344,6 +358,7 @@
         gridEl.appendChild(row);
         rows.push({ el: row, tiles });
       }
+      buildAssistBar();
     }
     function currentRowTiles() { return rows[round]?.tiles || []; }
 
@@ -355,6 +370,36 @@
     function blurMyTile() {
       const tile = currentRowTiles()[mySlot];
       if (tile) tile.classList.remove("focus");
+    }
+
+    // Assist bar under current row
+    function buildAssistBar() {
+      assistEl.innerHTML = "";
+      for (let i = 0; i < 5; i++) {
+        const btn = document.createElement("button");
+        btn.className = "fillBtn";
+        btn.textContent = "Fill";
+        btn.title = "Auto-lock the correct letter for this slot";
+        btn.onclick = () => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "fillSlot", slot: i }));
+          }
+        };
+        assistEl.appendChild(btn);
+      }
+      renderAssist(); // apply initial disabled states
+    }
+    function renderAssist() {
+      const buttons = assistEl.querySelectorAll(".fillBtn");
+      const tiles = currentRowTiles();
+      for (let i = 0; i < 5; i++) {
+        const btn = buttons[i];
+        const t = tiles[i];
+        const locked = t?.classList.contains("locked");
+        const revealed = t?.classList.contains("correct") || t?.classList.contains("present") || t?.classList.contains("absent");
+        // Disable if slot occupied by player, or already locked/revealed
+        btn.disabled = !!rosterOccupied[i] || locked || revealed;
+      }
     }
 
     // Apply per-slot custom borders to the current row (only when not locked/revealed)
@@ -394,20 +439,20 @@
         const L = e.key.toUpperCase();
         myTile.textContent = L;
         ws?.send(JSON.stringify({ type: "previewLetter", letter: L }));
-        applyCustomBorders();
+        applyCustomBorders(); renderAssist();
       } else if (e.key === "Backspace") {
         e.preventDefault();
         if (myTile.classList.contains("locked")) return;
         myTile.textContent = "";
         ws?.send(JSON.stringify({ type: "previewLetter", letter: "" }));
-        applyCustomBorders();
+        applyCustomBorders(); renderAssist();
       } else if (e.key === "Enter") {
         e.preventDefault();
         const letter = (myTile.textContent || "").trim().toUpperCase();
         if (!/^[A-Z]$/.test(letter)) { showToast("Type one letter A–Z in your tile."); return; }
         myTile.classList.add("locked"); // green via CSS
         ws?.send(JSON.stringify({ type: "submitLetter", letter }));
-        applyCustomBorders();
+        applyCustomBorders(); renderAssist();
       }
     });
 
@@ -436,7 +481,6 @@
 
       ws.onopen = () => {
         setStatus("connected");
-        // send preferred color after connect
         if (myColor) ws.send(JSON.stringify({ type: "setColor", color: myColor }));
       };
       ws.onclose = () => setStatus("disconnected");
@@ -452,31 +496,35 @@
           case "join":
             mySlot = msg.slot;
             round = msg.round;
-            maxRounds = msg.maxRounds; // should be 5 from server
+            maxRounds = msg.maxRounds; // 5 from server
             buildGrid();
             renderHistory(msg.history);
             renderSlots(msg.slots);
             setShareLink();
             initIdentityUI();
             focusMyTile();
+            renderAssist();
             break;
 
           case "roster":
             renderRoster(msg.players);
-            // update color map
+            // update color/occupancy maps
             for (const p of msg.players) {
               rosterColors[p.slot] = p.color || null;
+              rosterOccupied[p.slot] = !!p.occupied;
             }
             applyCustomBorders();
+            renderAssist();
             break;
 
           case "slotUpdate":
             applySlot(msg.slot, msg.slotState);
             applyCustomBorders();
+            renderAssist();
             break;
 
           case "reveal":
-            renderReveal(msg.round, msg.guess, msg.colors); // color the exact row
+            renderReveal(msg.round, msg.guess, msg.colors);
             if (msg.invalid) showToast(`“${msg.guess}” is not in the word list (counted).`);
             break;
 
@@ -484,12 +532,14 @@
             round = msg.round;
             applyCustomBorders();
             focusMyTile();
+            renderAssist();
             break;
 
           case "rowUnlocked": // rare safeguard path
             renderSlots(msg.slots);
             applyCustomBorders();
             focusMyTile();
+            renderAssist();
             break;
 
           case "waiting":
@@ -595,6 +645,8 @@
         ws?.send(JSON.stringify({ type: "requestReset" }));
         gameOverEl.hidden = true;
       };
+      // Disable assist buttons on game over
+      assistEl.querySelectorAll(".fillBtn").forEach(b => b.disabled = true);
     }
 
     function resetClient({ round: r, slots }) {
@@ -603,6 +655,7 @@
       renderSlots(slots);
       applyCustomBorders();
       focusMyTile();
+      renderAssist();
       showToast("New game started!");
     }
 

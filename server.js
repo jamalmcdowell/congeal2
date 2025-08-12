@@ -141,7 +141,7 @@ function createLobby() {
     id,
     answer: pickAnswer(),
     round: 0,
-    maxRounds: 5,            // ← FIVE total guesses now
+    maxRounds: 5,            // FIVE total guesses
     players: new Map(),
     slots: freshSlots(),
     history: [],
@@ -215,6 +215,7 @@ wss.on("connection", (ws, req) => {
     let msg; try { msg = JSON.parse(buf); } catch { return; }
     if (msg.type === "previewLetter") previewLetter(ws, lobby, msg.letter);
     if (msg.type === "submitLetter")  submitLetter(ws, lobby, msg.letter);
+    if (msg.type === "fillSlot")      fillSlotWithAnswer(ws, lobby, msg.slot);
     if (msg.type === "unlockMySlot")  unlockMySlot(ws, lobby);
     if (msg.type === "requestReset")  if (!lobby.inProgress) resetLobby(lobby);
     if (msg.type === "setName") {
@@ -269,6 +270,28 @@ function submitLetter(ws, lobby, letterRaw) {
   evaluateIfReady(lobby);
 }
 
+function fillSlotWithAnswer(ws, lobby, slotIndex) {
+  if (!lobby.inProgress) return;
+  ensureAnswer(lobby);
+  const i = Number(slotIndex);
+  if (!(i >= 0 && i < 5)) {
+    ws.send(JSON.stringify({ type: "error", message: "Invalid slot index." }));
+    return;
+  }
+  // Only allow fill if the slot has no player currently occupying it
+  if (lobby.players.has(i)) {
+    ws.send(JSON.stringify({ type: "error", message: "That slot is occupied by a player." }));
+    return;
+  }
+  if (lobby.slots[i]?.locked) return; // no-op
+
+  const letter = lobby.answer[i]; // correct letter at this position
+  lobby.slots[i] = { locked: true, letter, byClientId: "AUTO" };
+  broadcast(lobby, { type: "slotUpdate", slot: i, slotState: lobby.slots[i] });
+
+  evaluateIfReady(lobby);
+}
+
 function evaluateIfReady(lobby) {
   ensureAnswer(lobby);
 
@@ -318,7 +341,7 @@ function unlockMySlot(ws, lobby) {
 }
 
 function resetLobby(lobby) {
-  lobby.answer = pickAnswer(); // random word from the list each round
+  lobby.answer = pickAnswer(); // random word each round
   lobby.round = 0;
   lobby.inProgress = true;
   lobby.history = [];
