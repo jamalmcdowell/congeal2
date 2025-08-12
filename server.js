@@ -193,7 +193,7 @@ wss.on("connection", (ws, req) => {
   }
   const lobby = lobbies.get(lobbyId);
 
-  // assign a free slot 0..4
+  // assign a free slot 0..4 by default (can be changed via claimSlot)
   let assigned = null;
   for (let i = 0; i < 5; i++) if (!lobby.players.has(i)) { assigned = i; break; }
   if (assigned === null) { ws.send(JSON.stringify({ type:"error", message:"Lobby full (5/5)." })); ws.close(); return; }
@@ -216,6 +216,7 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "previewLetter") previewLetter(ws, lobby, msg.letter);
     if (msg.type === "submitLetter")  submitLetter(ws, lobby, msg.letter);
     if (msg.type === "fillSlot")      fillSlotWithAnswer(ws, lobby, msg.slot);
+    if (msg.type === "claimSlot")     claimSlot(ws, lobby, msg.slot);
     if (msg.type === "unlockMySlot")  unlockMySlot(ws, lobby);
     if (msg.type === "requestReset")  if (!lobby.inProgress) resetLobby(lobby);
     if (msg.type === "setName") {
@@ -236,9 +237,9 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => {
     if (!lobbies.has(lobbyId)) return;
     const l = lobbies.get(lobbyId);
-    if (l.players.get(assigned) === ws) {
-      l.players.delete(assigned);
-      if (!l.slots[assigned]?.locked) l.slots[assigned] = { locked: false, letter: "", byClientId: null };
+    if (l.players.get(ws.meta.slot) === ws) {
+      l.players.delete(ws.meta.slot);
+      if (!l.slots[ws.meta.slot]?.locked) l.slots[ws.meta.slot] = { locked: false, letter: "", byClientId: null };
       broadcast(l, { type: "roster", players: rosterView(l) });
     }
     if (l.players.size === 0 && l.history.length === 0) lobbies.delete(lobbyId);
@@ -290,6 +291,49 @@ function fillSlotWithAnswer(ws, lobby, slotIndex) {
   broadcast(lobby, { type: "slotUpdate", slot: i, slotState: lobby.slots[i] });
 
   evaluateIfReady(lobby);
+}
+
+// NEW: claim a specific free slot (0..4). Disallow switching if your current tile is locked and row hasn't revealed yet.
+function claimSlot(ws, lobby, slotIndex) {
+  if (!lobby.inProgress) return;
+  const target = Number(slotIndex);
+  if (!(target >= 0 && target < 5)) {
+    ws.send(JSON.stringify({ type: "error", message: "Invalid slot index." }));
+    return;
+  }
+  if (lobby.players.has(target)) {
+    ws.send(JSON.stringify({ type: "error", message: "That slot is already taken." }));
+    return;
+  }
+
+  // If current slot is locked and the row isn't resolved yet, block switching
+  const cur = ws.meta.slot;
+  if (cur != null && lobby.slots[cur]?.locked) {
+    const lockedCount = lobby.slots.filter(s => s.locked).length;
+    if (lockedCount < 5) {
+      ws.send(JSON.stringify({ type: "error", message: "You’ve already locked this row; switch after reveal." }));
+      return;
+    }
+  }
+
+  // Detach from current slot
+  if (cur != null) {
+    const prev = lobby.players.get(cur);
+    if (prev === ws) lobby.players.delete(cur);
+    // If previous slot wasn't locked, clear its letter preview
+    if (lobby.slots[cur] && !lobby.slots[cur].locked) {
+      lobby.slots[cur] = { locked: false, letter: "", byClientId: null };
+      broadcast(lobby, { type: "slotUpdate", slot: cur, slotState: lobby.slots[cur] });
+    }
+  }
+
+  // Attach to target
+  lobby.players.set(target, ws);
+  ws.meta.slot = target;
+
+  // Tell the requester, and refresh everyone’s roster/assist UI
+  ws.send(JSON.stringify({ type: "slotClaimed", slot: target }));
+  broadcast(lobby, { type: "roster", players: rosterView(lobby) });
 }
 
 function evaluateIfReady(lobby) {

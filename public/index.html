@@ -61,7 +61,7 @@
       background: #0e1320; color: #cfe3ff; font-size: 14px;
     }
 
-    .colorbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .colorbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
     .colorbar label { color: var(--muted); font-size: 14px; }
     .colorSelect {
       padding: 8px 10px; border-radius: 10px; border: 1px solid #273043;
@@ -72,7 +72,7 @@
       display: inline-block; vertical-align: middle; margin-left: 6px;
     }
 
-    /* grid */
+    /* Grid and rows */
     #grid { display: grid; gap: 10px; justify-content: center; }
     .row { display: grid; grid-template-columns: repeat(5, 64px); gap: 10px; }
     .tile {
@@ -86,7 +86,7 @@
     .tile.focus { box-shadow: 0 0 0 3px rgba(110,231,183,.35); }
     .tile.locked { border-color: var(--locked-border) !important; } /* keep green when submitted */
 
-    /* assist bar under current row */
+    /* Assist bar under current row */
     #assist { display: grid; grid-template-columns: repeat(5, 64px); gap: 10px; justify-content: center; margin: 6px 0 8px; }
     #assist .fillBtn {
       padding: 6px 10px; border-radius: 8px; border: 1px solid #273043;
@@ -94,7 +94,16 @@
     }
     #assist .fillBtn[disabled] { opacity: .45; cursor: not-allowed; }
 
-    /* reveal colors */
+    /* Slot picker */
+    #slotbar { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 10px 0 6px; }
+    .slotBtn {
+      padding: 8px 10px; border-radius: 10px; border: 1px solid #273043;
+      background: #0e1420; color: #cfe3ff; font-size: 13px; cursor: pointer; text-align: center;
+    }
+    .slotBtn.me { border-color: #6ee7b7; box-shadow: 0 0 0 2px rgba(110,231,183,.25) inset; }
+    .slotBtn[disabled] { opacity: .5; cursor: not-allowed; }
+
+    /* Reveal colors */
     .tile.correct { background: var(--correct); border-color: #16a34a !important; color: #081207; }
     .tile.present { background: var(--present); border-color: #9e7d05 !important; color: #0a0900; }
     .tile.absent  { background: var(--absent);  border-color: #cbd5e1 !important; color: #0b0f17; }
@@ -102,7 +111,7 @@
     .roster { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 8px; }
     .slotBadge {
       padding: 6px 8px; border-radius: 10px; background: #0e1420; border: 1px solid #222938;
-      text-align: center; font-size: 12px; color: var(--muted); display: flex; justify-content: center; align-items: center; gap: 6px;
+      text-align: center; font-size: 12px; color: #a0a8b8; display: flex; justify-content: center; align-items: center; gap: 6px;
     }
 
     .toast { margin-top: 10px; color: #ffd19a; min-height: 20px; }
@@ -170,6 +179,9 @@
         <span id="colorPreview" class="dot"></span>
       </div>
 
+      <!-- Slot picker -->
+      <div id="slotbar"></div>
+
       <div id="grid"></div>
       <!-- Assist bar: fill unoccupied slots with the correct letter (current row only) -->
       <div id="assist"></div>
@@ -189,20 +201,12 @@
       </header>
       <div>
         <ul>
-          <li>This is a 5-player co-op Wordle. Each player controls <strong>one letter slot</strong> per row.</li>
+          <li>Pick which <strong>slot (1–5)</strong> you control below the settings.</li>
           <li>Type a letter; everyone sees it live. Press <span class="kbd">Enter</span> to <strong>lock</strong> your slot (green border).</li>
           <li>If a slot is <strong>unoccupied</strong>, use the <em>Fill</em> button under it to auto-lock the correct letter.</li>
-          <li>When all 5 slots are locked, the row is scored and revealed:
-            <ul>
-              <li><strong>Green</strong> = correct letter & position</li>
-              <li><strong>Yellow</strong> = letter is in the word (wrong spot)</li>
-              <li><strong>White</strong> = letter not in the word</li>
-            </ul>
-          </li>
+          <li>When all 5 slots are locked, the row is revealed with Wordle colors.</li>
           <li>You have <strong>5 guesses</strong> to find the word.</li>
-          <li>Share the lobby link so friends can join. Use “Refresh Room Code” to start a fresh lobby.</li>
-          <li>Set your name and pick a <strong>border color</strong> — visible to everyone while typing.</li>
-          <li>Even if a word isn’t in the list, the guess still counts and reveals colors.</li>
+          <li>Share the lobby link for friends; “Refresh Room Code” starts a new lobby.</li>
         </ul>
       </div>
     </div>
@@ -213,6 +217,7 @@
     const qs = (s) => document.querySelector(s);
     const gridEl = qs("#grid");
     const assistEl = qs("#assist");
+    const slotbarEl = qs("#slotbar");
     const rosterEl = qs("#roster");
     const shareEl = qs("#share");
     const copyBtn = qs("#copy");
@@ -246,7 +251,7 @@
 
     // State
     let ws, mySlot = null;
-    let round = 0, maxRounds = 5; // default 5; server will confirm
+    let round = 0, maxRounds = 5; // default 5; server confirms
     const rows = []; // [{ el, tiles[5] }]
     const rosterColors = Array(5).fill(null);
     const rosterOccupied = Array(5).fill(false);
@@ -279,7 +284,6 @@
         location.href = data.joinUrl;
       };
     }
-
     function labelForColor(hex) {
       const map = {
         "#60A5FA": "Blue",
@@ -295,7 +299,6 @@
       };
       return map[hex] || hex;
     }
-
     function buildColorDropdown() {
       colorSelect.innerHTML = "";
       for (const col of PALETTE) {
@@ -359,6 +362,7 @@
         rows.push({ el: row, tiles });
       }
       buildAssistBar();
+      buildSlotBar();
     }
     function currentRowTiles() { return rows[round]?.tiles || []; }
 
@@ -387,7 +391,7 @@
         };
         assistEl.appendChild(btn);
       }
-      renderAssist(); // apply initial disabled states
+      renderAssist();
     }
     function renderAssist() {
       const buttons = assistEl.querySelectorAll(".fillBtn");
@@ -400,6 +404,32 @@
         // Disable if slot occupied by player, or already locked/revealed
         btn.disabled = !!rosterOccupied[i] || locked || revealed;
       }
+    }
+
+    // Slot picker
+    function buildSlotBar() {
+      slotbarEl.innerHTML = "";
+      for (let i = 0; i < 5; i++) {
+        const b = document.createElement("button");
+        b.className = "slotBtn";
+        b.textContent = `Position ${i + 1}`;
+        b.disabled = !!rosterOccupied[i] && i !== mySlot; // can't take occupied unless it's already yours
+        if (i === mySlot) b.classList.add("me");
+        b.onclick = () => {
+          if (i === mySlot) return;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "claimSlot", slot: i }));
+          }
+        };
+        slotbarEl.appendChild(b);
+      }
+    }
+    function renderSlotBar() {
+      const btns = slotbarEl.querySelectorAll(".slotBtn");
+      btns.forEach((b, i) => {
+        b.disabled = !!rosterOccupied[i] && i !== mySlot;
+        b.classList.toggle("me", i === mySlot);
+      });
     }
 
     // Apply per-slot custom borders to the current row (only when not locked/revealed)
@@ -504,17 +534,27 @@
             initIdentityUI();
             focusMyTile();
             renderAssist();
+            renderSlotBar();
+            break;
+
+          case "slotClaimed":
+            mySlot = msg.slot;
+            renderSlotBar();
+            focusMyTile();
+            applyCustomBorders();
+            renderAssist();
             break;
 
           case "roster":
             renderRoster(msg.players);
-            // update color/occupancy maps
+            // update occupancy/colors maps
             for (const p of msg.players) {
               rosterColors[p.slot] = p.color || null;
               rosterOccupied[p.slot] = !!p.occupied;
             }
             applyCustomBorders();
             renderAssist();
+            renderSlotBar();
             break;
 
           case "slotUpdate":
@@ -535,7 +575,7 @@
             renderAssist();
             break;
 
-          case "rowUnlocked": // rare safeguard path
+          case "rowUnlocked": // safeguard
             renderSlots(msg.slots);
             applyCustomBorders();
             focusMyTile();
@@ -645,7 +685,6 @@
         ws?.send(JSON.stringify({ type: "requestReset" }));
         gameOverEl.hidden = true;
       };
-      // Disable assist buttons on game over
       assistEl.querySelectorAll(".fillBtn").forEach(b => b.disabled = true);
     }
 
@@ -656,6 +695,7 @@
       applyCustomBorders();
       focusMyTile();
       renderAssist();
+      renderSlotBar();
       showToast("New game started!");
     }
 
@@ -665,7 +705,6 @@
       setShareLink();
       buildGrid();
       connectWS();
-      // init UI defaults
       if (nameInput) nameInput.value = displayName;
       buildColorDropdown();
     })();
