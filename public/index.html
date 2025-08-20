@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
-      --bg: #0f1115;
+      --bg: #0f1115;           /* classic background */
       --panel: #161a21;
       --accent: #6ee7b7;
       --muted: #a0a8b8;
@@ -25,11 +25,63 @@
     html, body { height: 100%; }
     body {
       margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: radial-gradient(1200px 600px at 70% -10%, #1b2230, var(--bg));
+      background: radial-gradient(1200px 600px at 70% -10%, #1b2230, var(--bg)); /* classic */
       color: var(--text); display: grid; place-items: center; padding: 20px;
+      transition: background 400ms ease;
     }
 
-    .wrap { width: 100%; max-width: 920px; }
+    /* THEME: Summer */
+    body.theme-summer {
+      background:
+        linear-gradient(180deg, #87e7ff 0%, #baf2ff 35%, #fff3c4 70%, #fde68a 100%);
+    }
+    .wrap { width: 100%; max-width: 920px; position: relative; z-index: 2; }
+
+    /* Summer decorative layer (non-interactive) */
+    #summerDecor {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none; display: none;
+    }
+    body.theme-summer #summerDecor { display: block; }
+    #summerDecor .sun {
+      position: absolute; width: 220px; height: 220px; right: -60px; top: -60px; border-radius: 50%;
+      background: radial-gradient( circle at 40% 40%, #ffe08a 0%, #ffd166 40%, #fdb813 70%, rgba(253,184,19,0) 72% );
+      box-shadow: 0 0 80px 30px rgba(253,184,19,.35);
+      animation: sunPulse 6s ease-in-out infinite;
+    }
+    @keyframes sunPulse { 0%,100%{ transform: scale(1)} 50%{ transform: scale(1.03)} }
+    #summerDecor .cloud {
+      position: absolute; top: 90px; left: -30%;
+      width: 180px; height: 60px; background: rgba(255,255,255,.9);
+      border-radius: 40px; filter: drop-shadow(0 6px 10px rgba(0,0,0,.08));
+      animation: drift 70s linear infinite;
+    }
+    #summerDecor .cloud:before, #summerDecor .cloud:after { content:""; position:absolute; background:inherit; border-radius:40px; }
+    #summerDecor .cloud:before { width: 100px; height: 60px; left: 30px; top: -28px; }
+    #summerDecor .cloud:after  { width: 80px;  height: 50px; left: 90px; top: -18px; }
+    @keyframes drift { from{ transform: translateX(-10vw)} to{ transform: translateX(120vw)} }
+    #summerDecor .c1 { top: 90px;  animation-duration: 70s; }
+    #summerDecor .c2 { top: 140px; animation-duration: 85s; animation-delay: 8s; width: 220px; }
+    #summerDecor .c3 { top: 200px; animation-duration: 95s; animation-delay: 20s; width: 200px; }
+    #summerDecor .sand {
+      position: absolute; left: 0; right: 0; bottom: 0; height: 140px;
+      background: linear-gradient(180deg, #ffe29a 0%, #f6d365 60%, #e8b86a 100%);
+      border-top-left-radius: 35% 30px; border-top-right-radius: 35% 30px;
+    }
+    #summerDecor .ocean {
+      position: absolute; left: -10%; right: -10%; bottom: 120px; height: 32px;
+      background: repeating-linear-gradient(
+        -45deg,
+        rgba(59, 130, 246, .35) 0px,
+        rgba(59, 130, 246, .35) 8px,
+        rgba(59, 130, 246, .2) 8px,
+        rgba(59, 130, 246, .2) 16px
+      );
+      border-top-left-radius: 40% 24px; border-top-right-radius: 40% 24px;
+      filter: blur(0.2px);
+      animation: tide 9s ease-in-out infinite;
+    }
+    @keyframes tide { 0%,100%{ transform: translateY(0)} 50%{ transform: translateY(-6px)} }
+
     header {
       display: flex; align-items: center; justify-content: space-between;
       margin-bottom: 16px; gap: 10px;
@@ -121,6 +173,14 @@
       cursor: pointer;
     }
 
+    /* Streak pill */
+    .streakPill {
+      background: rgba(255,255,255,.08); border: 1px solid #273043; color: #ffd19a;
+      padding: 8px 10px; border-radius: 999px; font-weight: 700; letter-spacing: .3px;
+    }
+    .streakPop { animation: pop .3s ease; }
+    @keyframes pop { 0%{ transform: scale(.92)} 60%{ transform: scale(1.06)} 100%{ transform: scale(1)} }
+
     /* modal */
     .modal {
       position: fixed; inset: 0; display: none;
@@ -137,8 +197,7 @@
       box-shadow: 0 20px 60px rgba(0,0,0,.35);
     }
     .modal header {
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      margin: 0 0 10px 0;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px 0;
     }
     .modal h2 { font-size: 18px; margin: 0; }
     .xbtn {
@@ -151,7 +210,17 @@
     }
   </style>
 </head>
-<body>
+<body class="theme-summer">
+  <!-- Summer decorations -->
+  <div id="summerDecor" aria-hidden="true">
+    <div class="sun"></div>
+    <div class="cloud c1"></div>
+    <div class="cloud c2"></div>
+    <div class="cloud c3"></div>
+    <div class="ocean"></div>
+    <div class="sand"></div>
+  </div>
+
   <div class="wrap">
     <header>
       <h1>Congeal</h1>
@@ -166,6 +235,8 @@
         </div>
         <button id="newRoom">Refresh Room Code</button>
         <button id="howToBtn">How to play</button>
+        <button id="themeBtn" title="Toggle theme">Theme: Summer ☀️</button>
+        <span class="streakPill">Streak: <span id="streakCount">0</span> 🔥</span>
       </div>
 
       <div class="namebar">
@@ -206,7 +277,7 @@
           <li>If a slot is <strong>unoccupied</strong>, use the <em>Fill</em> button under it to auto-lock the correct letter.</li>
           <li>When all 5 slots are locked, the row is revealed with Wordle colors.</li>
           <li>You have <strong>5 guesses</strong> to find the word.</li>
-          <li>Share the lobby link for friends; “Refresh Room Code” starts a new lobby.</li>
+          <li>Win streak increases on a win and resets to 0 if you run out of guesses.</li>
         </ul>
       </div>
     </div>
@@ -229,6 +300,8 @@
     const saveNameBtn = qs("#saveName");
     const colorSelect = qs("#colorSelect");
     const colorPreview = qs("#colorPreview");
+    const themeBtn = qs("#themeBtn");
+    const streakEl = qs("#streakCount");
 
     // Modal elements
     const howToBtn = qs("#howToBtn");
@@ -260,6 +333,20 @@
     let displayName =
       (params.get("name") || localStorage.getItem("name") || "Player").trim().slice(0,16);
     localStorage.setItem("name", displayName);
+
+    // Theme bootstrap
+    const savedTheme = localStorage.getItem("theme") || "summer";
+    applyTheme(savedTheme);
+    themeBtn.onclick = () => {
+      const next = document.body.classList.contains("theme-summer") ? "dark" : "summer";
+      applyTheme(next);
+    };
+    function applyTheme(t) {
+      document.body.classList.toggle("theme-summer", t === "summer");
+      document.body.classList.toggle("theme-dark", t !== "summer");
+      themeBtn.textContent = t === "summer" ? "Theme: Summer ☀️" : "Theme: Classic 🌙";
+      localStorage.setItem("theme", t);
+    }
 
     // Color palette (must match server)
     const PALETTE = ["#60A5FA","#F472B6","#F59E0B","#A78BFA","#14B8A6","#EF4444","#22D3EE","#FB7185","#8B5CF6","#F97316"];
@@ -401,8 +488,7 @@
         const t = tiles[i];
         const locked = t?.classList.contains("locked");
         const revealed = t?.classList.contains("correct") || t?.classList.contains("present") || t?.classList.contains("absent");
-        // Disable if slot occupied by player, or already locked/revealed
-        btn.disabled = !!rosterOccupied[i] || locked || revealed;
+        btn.disabled = !!rosterOccupied[i] || locked || revealed; // disabling logic
       }
     }
 
@@ -413,7 +499,7 @@
         const b = document.createElement("button");
         b.className = "slotBtn";
         b.textContent = `Position ${i + 1}`;
-        b.disabled = !!rosterOccupied[i] && i !== mySlot; // can't take occupied unless it's already yours
+        b.disabled = !!rosterOccupied[i] && i !== mySlot; // can't take occupied unless it's yours
         if (i === mySlot) b.classList.add("me");
         b.onclick = () => {
           if (i === mySlot) return;
@@ -527,6 +613,7 @@
             mySlot = msg.slot;
             round = msg.round;
             maxRounds = msg.maxRounds; // 5 from server
+            updateStreak(msg.streak || 0);
             buildGrid();
             renderHistory(msg.history);
             renderSlots(msg.slots);
@@ -590,10 +677,12 @@
             break;
 
           case "gameOver":
+            updateStreak(msg.streak ?? 0, true);
             endGame(msg);
             break;
 
           case "reset":
+            updateStreak(msg.streak ?? 0);
             resetClient(msg);
             break;
         }
@@ -697,6 +786,18 @@
       renderAssist();
       renderSlotBar();
       showToast("New game started!");
+    }
+
+    // Win streak UI
+    function updateStreak(val, pop = false) {
+      streakEl.textContent = String(val);
+      if (pop) {
+        const pill = streakEl.parentElement;
+        pill.classList.remove("streakPop");
+        void pill.offsetWidth; // reflow to restart animation
+        pill.classList.add("streakPop");
+        setTimeout(() => pill.classList.remove("streakPop"), 350);
+      }
     }
 
     // Boot

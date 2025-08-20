@@ -1,5 +1,6 @@
 // server.js
-// Multiplayer 5-letter “team Wordle”, 5 guesses, shared link/lobbies.
+// Multiplayer 5-letter “team Wordle”, 5 guesses, shared link/lobbies, live typing,
+// slot picker, fill buttons for empty slots, name/colors, and WIN STREAK.
 // Run: node server.js
 
 const express = require("express");
@@ -96,7 +97,8 @@ Lobby:
   players: Map(slotIndex -> ws),
   slots: [ {locked, letter, byClientId} x5 ],
   history: [ { guess, colors:[], invalid?:boolean } ],
-  inProgress: boolean
+  inProgress: boolean,
+  streak: number   // consecutive wins
 }
 */
 const lobbies = new Map();
@@ -146,6 +148,7 @@ function createLobby() {
     slots: freshSlots(),
     history: [],
     inProgress: true,
+    streak: 0,               // NEW: win streak
     createdAt: Date.now(),
   };
   ensureAnswer(lobby);
@@ -175,7 +178,8 @@ app.get("/debug", (req, res) => {
       id: l.id, round: l.round, inProgress: l.inProgress,
       answer: reveal ? l.answer : "(hidden)",
       hasAnswer: typeof l.answer === "string" && l.answer.length === 5,
-      historyLen: l.history.length
+      historyLen: l.history.length,
+      streak: l.streak
     });
   });
   res.json(data);
@@ -208,6 +212,7 @@ wss.on("connection", (ws, req) => {
     lobbyId, slot: assigned, name,
     maxRounds: lobby.maxRounds, round: lobby.round,
     history: lobby.history, slots: lobby.slots,
+    streak: lobby.streak,                     // NEW
   }));
   broadcast(lobby, { type: "roster", players: rosterView(lobby) });
 
@@ -293,7 +298,7 @@ function fillSlotWithAnswer(ws, lobby, slotIndex) {
   evaluateIfReady(lobby);
 }
 
-// NEW: claim a specific free slot (0..4). Disallow switching if your current tile is locked and row hasn't revealed yet.
+// claim a specific free slot (0..4). Disallow switching if your current tile is locked and row hasn't revealed yet.
 function claimSlot(ws, lobby, slotIndex) {
   if (!lobby.inProgress) return;
   const target = Number(slotIndex);
@@ -362,14 +367,16 @@ function evaluateIfReady(lobby) {
 
   if (correct) {
     lobby.inProgress = false;
-    broadcast(lobby, { type: "gameOver", reason: "solved", answer: lobby.answer });
+    lobby.streak = (lobby.streak || 0) + 1;   // --- increment streak on win
+    broadcast(lobby, { type: "gameOver", reason: "solved", answer: lobby.answer, streak: lobby.streak });
     return;
   }
 
   lobby.round++;
   if (lobby.round >= lobby.maxRounds) {
     lobby.inProgress = false;
-    broadcast(lobby, { type: "gameOver", reason: "out_of_rounds", answer: lobby.answer });
+    lobby.streak = 0;                         // --- reset streak on loss
+    broadcast(lobby, { type: "gameOver", reason: "out_of_rounds", answer: lobby.answer, streak: lobby.streak });
     return;
   }
 
@@ -391,7 +398,7 @@ function resetLobby(lobby) {
   lobby.history = [];
   lobby.slots = freshSlots();
   ensureAnswer(lobby);
-  broadcast(lobby, { type: "reset", round: 0, slots: lobby.slots });
+  broadcast(lobby, { type: "reset", round: 0, slots: lobby.slots, streak: lobby.streak });
 }
 
 function rosterView(lobby) {
